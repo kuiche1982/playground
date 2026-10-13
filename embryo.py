@@ -367,42 +367,54 @@ class ContextModulator:
 
 
 class PrefrontalCortex:
-    """L10: 前额叶——可学习的小网络，初始权重很小（婴儿状态）"""
-    def __init__(self, n_input=6, n_output=5, lr=0.05, seed=None):
+    """L10: 前额叶——加隐藏层（6→8→5），不是纯线性"""
+    def __init__(self, n_input=6, n_hidden=8, n_output=5, lr=0.05, seed=None):
         if seed is not None:
             np.random.seed(seed)
         self.n_input = n_input
+        self.n_hidden = n_hidden
         self.n_output = n_output
         self.lr = lr
-        # 初始权重调大——让L10一开始就有一点听指令的能力
-        self.W = np.random.randn(n_output, n_input).astype(np.float32) * 0.1
-        # 抑制维度初始权重设成负数，sigmoid≈0.12，几乎不抑制，慢慢学
+        # 隐藏层权重
+        self.W1 = np.random.randn(n_hidden, n_input).astype(np.float32) * 0.1
+        # 输出层权重
+        self.W2 = np.random.randn(n_output, n_hidden).astype(np.float32) * 0.1
+        # 抑制维度初始权重设成负数，sigmoid≈0.12
         if n_output >= 5:
-            self.W[4, :] = -2.0 + np.random.randn(n_input).astype(np.float32) * 0.1
-        self.trace = np.zeros((n_output, n_input), dtype=np.float32)
-        self.trace_decay = 0.95  # 拉长trace，解决指令在前、奖励在后的信用分配
+            self.W2[4, :] = -2.0 + np.random.randn(n_hidden).astype(np.float32) * 0.1
+        # trace（两层都有）
+        self.trace1 = np.zeros((n_hidden, n_input), dtype=np.float32)
+        self.trace2 = np.zeros((n_output, n_hidden), dtype=np.float32)
+        self.trace_decay = 0.95
+        self.hidden = None  # 缓存隐藏层激活
 
     def forward(self, lang_cmd, energy, hip_strength):
-        """前向：输入6维 → 输出5维（前4维动作偏置，第5维抑制系数）"""
+        """前向：输入6维 → 隐藏层8维 → 输出5维"""
         x = np.concatenate([lang_cmd, [energy], [hip_strength]])
-        out = self.W @ x
+        hidden = np.maximum(0, self.W1 @ x)  # ReLU
+        out = self.W2 @ hidden
         # 更新trace
-        self.trace *= self.trace_decay
-        self.trace[:, :] += x[None, :]  # 所有输出都记录输入trace
-        # 第5维用sigmoid压到0-1之间（抑制系数）
-        out[4] = 1.0 / (1.0 + np.exp(-out[4]))  # sigmoid
+        self.trace1 *= self.trace_decay
+        self.trace1[:, :] += x[None, :]
+        self.trace2 *= self.trace_decay
+        self.trace2[:, :] += hidden[None, :]
+        self.hidden = hidden
+        # 第5维用sigmoid压到0-1（抑制系数）
+        out[4] = 1.0 / (1.0 + np.exp(-out[4]))
         return out
 
     def learn(self, dopamine):
-        """Hebbian + 多巴胺调制"""
+        """Hebbian + 多巴胺调制（两层都更新）"""
         if dopamine == 0:
             return
-        self.W += self.lr * dopamine * self.trace
-        np.clip(self.W, -0.5, 0.5, out=self.W)
+        self.W1 += self.lr * dopamine * self.trace1
+        self.W2 += self.lr * dopamine * self.trace2
+        np.clip(self.W1, -0.5, 0.5, out=self.W1)
+        np.clip(self.W2, -0.5, 0.5, out=self.W2)
 
     def get_bias(self, task_bias):
-        """输出任务偏置给决策层（前4维是动作偏置，第5维是抑制系数）"""
-        return task_bias[:4] * 1.0  # 只取前4维动作偏置
+        """输出任务偏置给决策层（前4维是动作偏置）"""
+        return task_bias[:4] * 1.0
 
 
 def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.csv",
@@ -414,7 +426,7 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
     hip = Hippocampus(world_size=15, decay=0.9995)
     fm = ForwardModel(n_kc=500, n_actions=4, lr=0.1, seed=seed)
     lang = LanguageChannel()
-    pfc = PrefrontalCortex(n_input=6, n_output=5, lr=0.15, seed=seed)  # L10学习速率恢复
+    pfc = PrefrontalCortex(n_input=6, n_hidden=8, n_output=5, lr=0.25, seed=seed)  # L10加隐藏层
     ctx = ContextModulator(n_input=4, n_output=4, lr=0.06, seed=seed)    # L8 上下文调制（可学习，婴儿状态）
 
     # 从checkpoint继续训练（调参用）
