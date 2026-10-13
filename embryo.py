@@ -367,7 +367,7 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
     hip = Hippocampus(world_size=15, decay=0.9995)
     fm = ForwardModel(n_kc=500, n_actions=4, lr=0.1, seed=seed)
     lang = LanguageChannel()
-    pfc = PrefrontalCortex(n_input=6, n_output=4, lr=0.05, seed=seed)  # L10 前额叶（可学习）
+    pfc = PrefrontalCortex(n_input=6, n_output=4, lr=0.08, seed=seed)  # L10 前额叶（可学习，中等速率）
     # ctx = ContextModulator(n_kc=500)   # L8 上下文调制——暂时不用，L10直接输出到决策层
 
     # 从checkpoint继续训练（调参用）
