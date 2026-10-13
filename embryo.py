@@ -359,7 +359,8 @@ class PrefrontalCortex:
         return vec
 
 
-def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.csv"):
+def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.csv",
+        resume_mb=None, resume_hip=None, resume_fm=None):
     os.makedirs(ckpt_dir, exist_ok=True)
 
     world = World(size=15, n_food=6, n_walls=3, n_cues=6, seed=seed)
@@ -367,6 +368,17 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
     hip = Hippocampus(world_size=15, decay=0.9995)
     fm = ForwardModel(n_kc=500, n_actions=4, lr=0.1, seed=seed)
     lang = LanguageChannel()
+
+    # 从checkpoint继续训练（调参用）
+    if resume_mb:
+        mb.load(resume_mb)
+        print(f"加载蘑菇体权重: {resume_mb}")
+    if resume_hip:
+        hip.load(resume_hip)
+        print(f"加载海马体权重: {resume_hip}")
+    if resume_fm:
+        fm.load(resume_fm)
+        print(f"加载前向模型权重: {resume_fm}")
 
     foods_eaten = 0
     eat_times = []
