@@ -152,8 +152,8 @@ class MushroomBody:
         # L7: 记忆巩固
         self.activation_count = np.zeros_like(self.W_out)
         self.plasticity = np.ones_like(self.W_out)  # 1.0=可塑, 0.02=固化
-        self.consolidation_threshold = 15
-        self.base_decay = 0.99995  # 基础衰减（调弱，不要把学的东西都衰减掉）
+        self.consolidation_threshold = 20
+        self.base_decay = 0.99999  # 很弱的衰减，20000步只衰减18%
 
         # L9: 回放（存成功经历）
         self.success_memories = []  # (active_kc, action) 成功的经历
@@ -193,8 +193,10 @@ class MushroomBody:
                 self.success_memories.append((active_kc.copy(), chosen_action))
 
     def step_decay(self):
-        """每步的权重衰减（模拟遗忘）"""
-        self.W_out *= (self.base_decay ** self.plasticity)
+        """每步的权重衰减——只对长期不激活的突触衰减（遗忘），经常激活的不衰减"""
+        # 只有activation_count=0的突触才衰减（从未被强化过的）
+        mask = (self.activation_count == 0)
+        self.W_out[mask] *= self.base_decay
         # 激活计数缓慢回落（防止永久锁死）
         self.activation_count *= 0.9995
 
@@ -420,11 +422,11 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
             dopamine = 0.0
 
         mb.learn(dopamine, active_kc, action)
-        mb.step_decay()  # L7: 每步权重衰减（模拟遗忘）
+        mb.step_decay()  # L7: 只对长期不激活的突触衰减
 
-        # L9: 每1000步回放一次（模拟睡眠巩固）
-        if step % 1000 == 0 and step > 0:
-            mb.replay(n_times=30)
+        # L9: 回放——先关掉，回放冲乱了权重
+        # if step % 2000 == 0 and step > 0:
+        #     mb.replay(n_times=10)
 
         # 饿死重置
         if world.energy <= 0:
