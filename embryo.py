@@ -147,7 +147,7 @@ class World:
                 ate = True
         else:
             bumped = True
-        self.energy = max(0.0, self.energy - 0.004)
+        self.energy = max(0.0, self.energy - 0.004)  # 恢复energy下降
         return ate, bumped
 
 
@@ -522,25 +522,17 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
         else:
             dopamine = 0.0
 
-        # 刚收到指令那一步：立即给多巴胺（预判，让trace能连上）
+        # 刚收到指令那一步：立即给多巴胺（预判）
         if just_got_command:
             if action == lang.command:
                 dopamine += 2.0  # 第一步走对，给奖励
+                command_followed += 1  # 单步判定统计
             else:
                 dopamine -= 1.0  # 第一步走错，给惩罚
 
-        # 20步窗口结束：只统计听懂指令率（位移趋势），不再给多巴胺
+        # 20步窗口结束：只用于训练，不统计
         if cmd_window > 0:
             cmd_window -= 1
-            if cmd_window == 0:
-                displacement = world.pos - cmd_start_pos
-                target_vec = cmd_target_pos - cmd_start_pos
-                disp_norm = np.linalg.norm(displacement)
-                target_norm = np.linalg.norm(target_vec)
-                if disp_norm > 0.5 and target_norm > 0.5:
-                    cos_angle = np.dot(displacement, target_vec) / (disp_norm * target_norm)
-                    if cos_angle > 0.707:  # 夹角<45°，算听懂
-                        command_followed += 1
         just_got_command = False
 
         mb.learn(dopamine, active_kc, action)
@@ -625,4 +617,4 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
 
 
 if __name__ == "__main__":
-    run(n_steps=50000, seed=42)
+    run(n_steps=100000, seed=42)
