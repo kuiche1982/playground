@@ -325,6 +325,38 @@ class ContextModulator:
         return active_kc  # 简化：实际应该缩放KC激活值，这里先占位
 
 
+class PrefrontalCortex:
+    """L10: 前额叶——任务判断/上下文整合，输出上下文信号给L8"""
+    def __init__(self, n_kc=500):
+        self.n_kc = n_kc
+        self.task_mode = "explore"  # explore / seek_food / follow_command
+
+    def update(self, lang_cmd=None, hip_memory_strength=0.0, pred_error=0.0, energy=1.0):
+        """根据所有输入判断当前任务模式"""
+        # 1. 有语言指令 → 优先执行指令模式
+        if lang_cmd is not None and lang_cmd.max() > 0:
+            self.task_mode = "follow_command"
+        # 2. 能量低 → 优先找食物
+        elif energy < 0.3:
+            self.task_mode = "seek_food"
+        # 3. 环境熟悉（海马记忆强）→ 探索模式
+        elif hip_memory_strength > 0.5:
+            self.task_mode = "explore"
+        else:
+            self.task_mode = "explore"
+
+    def get_context_vec(self):
+        """输出上下文向量给L8调制器"""
+        vec = np.zeros(self.n_kc, dtype=np.float32)
+        if self.task_mode == "follow_command":
+            vec[:self.n_kc//4] = 1.5  # 语言相关KC拉高
+        elif self.task_mode == "seek_food":
+            vec[self.n_kc//4:self.n_kc//2] = 1.5  # 食物寻找相关KC拉高
+        else:
+            vec[self.n_kc//2:] = 1.2  # 探索相关KC适度拉高
+        return vec
+
+
 def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.csv"):
     os.makedirs(ckpt_dir, exist_ok=True)
 
