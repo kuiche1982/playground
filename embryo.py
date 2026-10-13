@@ -297,6 +297,34 @@ class LanguageChannel:
         return vec
 
 
+class ContextModulator:
+    """L8: 上下文调制——临时调节KC神经元的兴奋性（不改权重）"""
+    def __init__(self, n_kc=500):
+        self.gain = np.ones(n_kc, dtype=np.float32)  # 临时增益，1.0=正常
+        self.target_gain = np.ones(n_kc, dtype=np.float32)
+
+    def set_context(self, context_vec, n_kc):
+        """根据上下文（语言指令等）设置目标增益"""
+        # 简单：指令方向对应的KC集群增益拉高
+        for i in range(n_kc):
+            if context_vec.max() > 0:
+                # 随机分配一部分KC到对应方向
+                if i % 4 == np.argmax(context_vec):
+                    self.target_gain[i] = 1.5  # 相关KC增益拉高
+                else:
+                    self.target_gain[i] = 0.7   # 无关KC增益压低
+            else:
+                self.target_gain[i] = 1.0
+
+    def step(self):
+        """每步缓慢过渡（模拟上下文切换的空白期）"""
+        self.gain += (self.target_gain - self.gain) * 0.1
+
+    def apply(self, active_kc):
+        """应用增益到激活的KC"""
+        return active_kc  # 简化：实际应该缩放KC激活值，这里先占位
+
+
 def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.csv"):
     os.makedirs(ckpt_dir, exist_ok=True)
 
