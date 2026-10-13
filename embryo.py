@@ -437,6 +437,10 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
     death_count = 0
     success_memories = []  # L9: 正样本（成功经历）
     failure_memories = []  # L9: 负样本（指令执行错误）
+    # 20步窗口判定
+    cmd_window = 0
+    cmd_start_pos = None
+    cmd_target_pos = None
 
     # 训练日志
     log_rows = []
@@ -446,8 +450,8 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
         smell = world.smell_gradient()
         vision = world.see()
 
-        if step % 200 == 0:  # 回到200步一个指令
-            # 给随机指令，然后在指令方向上放个临时食物（听指令就有奖励）
+        if step % 200 == 0:  # 200步一个指令
+            # 给随机指令，然后在指令方向上放个临时食物
             cmd = np.random.randint(4)
             lang.set_command(cmd)
             # 在指令方向上放食物（近的远的都有）
@@ -458,9 +462,13 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
             if 0 <= food_r < world.size and 0 <= food_c < world.size:
                 if world.grid[food_r, food_c] == world.EMPTY:
                     world.grid[food_r, food_c] = world.FOOD
-                    world.temp_foods.append((food_r, food_c, 20))  # 寿命20步，虫子有更多时间走过去
+                    world.temp_foods.append((food_r, food_c, 20))  # 寿命20步
             command_total += 1
             just_got_command = True
+            # 20步窗口判定：记录起始位置和目标位置
+            cmd_start_pos = world.pos.copy()
+            cmd_target_pos = np.array([food_r, food_c])
+            cmd_window = 20
 
         # 更新临时食物寿命，寿命到了就消失
         new_temp_foods = []
@@ -498,19 +506,6 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
         noise = np.random.randn(4) * 0.2
         action = int(np.argmax(total + noise))
 
-        if just_got_command and action == lang.command:
-            command_followed += 1
-        elif just_got_command and action != lang.command:
-            # L9: 存负样本——收到指令但执行错误
-            if len(failure_memories) < 500:
-                failure_memories.append({
-                    'active_kc': active_kc.copy(),
-                    'action': action,
-                    'lang_input': lang_input.copy(),
-                    'energy': world.energy,
-                    'hip_strength': hip_strength,
-                })
-
         ate, bumped = world.step(action)
         mb.update_trace(active_kc, action)
         hip.decay_memory()
@@ -527,12 +522,25 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
         else:
             dopamine = 0.0
 
-        # 临时：听指令走对了就给多巴胺，不管有没有吃到食物
+        # 刚收到指令那一步：立即给多巴胺（预判，让trace能连上）
         if just_got_command:
             if action == lang.command:
-                dopamine += 1.0  # 听指令奖励翻倍
+                dopamine += 2.0  # 第一步走对，给奖励
             else:
-                dopamine -= 0.5  # 不听指令惩罚加大
+                dopamine -= 1.0  # 第一步走错，给惩罚
+
+        # 20步窗口结束：只统计听懂指令率（位移趋势），不再给多巴胺
+        if cmd_window > 0:
+            cmd_window -= 1
+            if cmd_window == 0:
+                displacement = world.pos - cmd_start_pos
+                target_vec = cmd_target_pos - cmd_start_pos
+                disp_norm = np.linalg.norm(displacement)
+                target_norm = np.linalg.norm(target_vec)
+                if disp_norm > 0.5 and target_norm > 0.5:
+                    cos_angle = np.dot(displacement, target_vec) / (disp_norm * target_norm)
+                    if cos_angle > 0.707:  # 夹角<45°，算听懂
+                        command_followed += 1
         just_got_command = False
 
         mb.learn(dopamine, active_kc, action)
