@@ -471,7 +471,7 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
         imagined = fm.imagine(active_kc)
 
         habit = mb.decide(active_kc)
-        language_bias = lang_input * (2.0 + 4.0 * world.energy)  # 饥饿度平衡：不饿听指令，饿了找食物
+        language_bias = lang_input * (3.0 + 4.0 * world.energy)  # 调大基线：饿了也有点听指令
         pfc_bias = pfc.get_bias(task_bias) * 2.0  # L10输出权重调大，对决策影响更大
         ctx_bias = ctx.get_gain(ctx_gain)  # L8上下文调制增益
         total = smell * 1.0 + habit * 1.0 + spatial * 0.5 + imagined * 0.8 + language_bias + pfc_bias + ctx_bias  # 饥饿度平衡语言权重
