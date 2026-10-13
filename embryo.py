@@ -530,9 +530,9 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
         # 临时：听指令走对了就给多巴胺，不管有没有吃到食物
         if just_got_command:
             if action == lang.command:
-                dopamine += 0.5  # 听指令奖励
+                dopamine += 1.0  # 听指令奖励翻倍
             else:
-                dopamine -= 0.3  # 不听指令惩罚
+                dopamine -= 0.5  # 不听指令惩罚加大
         just_got_command = False
 
         mb.learn(dopamine, active_kc, action)
