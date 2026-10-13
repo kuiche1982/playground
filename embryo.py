@@ -330,35 +330,37 @@ class ContextModulator:
 
 
 class PrefrontalCortex:
-    """L10: 前额叶——任务判断/上下文整合，输出上下文信号给L8"""
-    def __init__(self, n_kc=500):
-        self.n_kc = n_kc
-        self.task_mode = "explore"  # explore / seek_food / follow_command
+    """L10: 前额叶——可学习的小网络，初始权重很小（婴儿状态）"""
+    def __init__(self, n_input=6, n_output=4, lr=0.05, seed=None):
+        if seed is not None:
+            np.random.seed(seed)
+        self.n_input = n_input
+        self.n_output = n_output
+        self.lr = lr
+        # 初始权重很小——婴儿前额叶没发育，几乎没作用
+        self.W = np.random.randn(n_output, n_input).astype(np.float32) * 0.01
+        self.trace = np.zeros((n_output, n_input), dtype=np.float32)
+        self.trace_decay = 0.9
 
-    def update(self, lang_cmd=None, hip_memory_strength=0.0, pred_error=0.0, energy=1.0):
-        """根据所有输入判断当前任务模式"""
-        # 1. 有语言指令 → 优先执行指令模式
-        if lang_cmd is not None and lang_cmd.max() > 0:
-            self.task_mode = "follow_command"
-        # 2. 能量低 → 优先找食物
-        elif energy < 0.3:
-            self.task_mode = "seek_food"
-        # 3. 环境熟悉（海马记忆强）→ 探索模式
-        elif hip_memory_strength > 0.5:
-            self.task_mode = "explore"
-        else:
-            self.task_mode = "explore"
+    def forward(self, lang_cmd, energy, hip_strength):
+        """前向：输入6维 → 输出4维任务模式偏好"""
+        x = np.concatenate([lang_cmd, [energy], [hip_strength]])
+        out = self.W @ x
+        # 更新trace
+        self.trace *= self.trace_decay
+        self.trace[:, :] += x[None, :]  # 所有输出都记录输入trace
+        return out
 
-    def get_context_vec(self):
-        """输出上下文向量给L8调制器"""
-        vec = np.zeros(self.n_kc, dtype=np.float32)
-        if self.task_mode == "follow_command":
-            vec[:self.n_kc//4] = 1.5  # 语言相关KC拉高
-        elif self.task_mode == "seek_food":
-            vec[self.n_kc//4:self.n_kc//2] = 1.5  # 食物寻找相关KC拉高
-        else:
-            vec[self.n_kc//2:] = 1.2  # 探索相关KC适度拉高
-        return vec
+    def learn(self, dopamine):
+        """Hebbian + 多巴胺调制"""
+        if dopamine == 0:
+            return
+        self.W += self.lr * dopamine * self.trace
+        np.clip(self.W, -0.5, 0.5, out=self.W)
+
+    def get_bias(self, task_bias):
+        """输出任务偏置给决策层"""
+        return task_bias * 1.0  # 初始偏置小，但学习后会慢慢变大
 
 
 def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.csv",
@@ -370,8 +372,8 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
     hip = Hippocampus(world_size=15, decay=0.9995)
     fm = ForwardModel(n_kc=500, n_actions=4, lr=0.1, seed=seed)
     lang = LanguageChannel()
-    pfc = PrefrontalCortex(n_kc=500)  # L10 前额叶
-    ctx = ContextModulator(n_kc=500)   # L8 上下文调制
+    pfc = PrefrontalCortex(n_input=6, n_output=4, lr=0.05, seed=seed)  # L10 前额叶（可学习）
+    # ctx = ContextModulator(n_kc=500)   # L8 上下文调制——暂时不用，L10直接输出到决策层
 
     # 从checkpoint继续训练（调参用）
     if resume_mb:
@@ -408,22 +410,18 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
 
         sensory = np.concatenate([vision, lang_input])
 
-        # L10 前额叶：判断当前任务模式
+        # L10 前额叶：可学习小网络，输出任务偏置（初始几乎没作用）
         hip_strength = hip.memory[world.pos[0], world.pos[1]] if 0 <= world.pos[0] < 15 and 0 <= world.pos[1] < 15 else 0
-        pfc.update(lang_cmd=lang_input, hip_memory_strength=hip_strength, energy=world.energy)
+        task_bias = pfc.forward(lang_input, world.energy, hip_strength)
 
-        # L8 上下文调制：根据任务模式调KC增益
-        ctx_vec = pfc.get_context_vec()
-        ctx.set_context(lang_input, mb.n_kc)
-        ctx.step()
-
-        active_kc = mb.encode(sensory, kc_gain=ctx.gain)
+        active_kc = mb.encode(sensory)
         spatial = hip.spatial_bias(world.pos)
         imagined = fm.imagine(active_kc)
 
         habit = mb.decide(active_kc)
         language_bias = lang_input * 2.0
-        total = smell * 1.0 + habit * 1.0 + spatial * 0.5 + imagined * 0.8 + language_bias
+        pfc_bias = pfc.get_bias(task_bias)  # L10输出加到决策层
+        total = smell * 1.0 + habit * 1.0 + spatial * 0.5 + imagined * 0.8 + language_bias + pfc_bias
         noise = np.random.randn(4) * 0.2
         action = int(np.argmax(total + noise))
 
@@ -449,6 +447,7 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
 
         mb.learn(dopamine, active_kc, action)
         mb.step_decay()  # L7: 只对长期不激活的突触衰减
+        pfc.learn(dopamine)  # L10: 前额叶也用Hebbian学习
 
         # L9: 回放——先关掉，回放冲乱了权重
         # if step % 2000 == 0 and step > 0:
