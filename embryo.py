@@ -335,7 +335,7 @@ class PrefrontalCortex:
         # 初始权重很小——婴儿前额叶没发育，几乎没作用
         self.W = np.random.randn(n_output, n_input).astype(np.float32) * 0.01
         self.trace = np.zeros((n_output, n_input), dtype=np.float32)
-        self.trace_decay = 0.9
+        self.trace_decay = 0.95  # 拉长trace，解决指令在前、奖励在后的信用分配
 
     def forward(self, lang_cmd, energy, hip_strength):
         """前向：输入6维 → 输出4维任务模式偏好"""
@@ -416,7 +416,7 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
 
         habit = mb.decide(active_kc)
         language_bias = lang_input * 2.0
-        pfc_bias = pfc.get_bias(task_bias)  # L10输出加到决策层
+        pfc_bias = pfc.get_bias(task_bias) * 2.0  # L10输出权重调大，对决策影响更大
         total = smell * 1.0 + habit * 1.0 + spatial * 0.5 + imagined * 0.8 + language_bias + pfc_bias
         noise = np.random.randn(4) * 0.2
         action = int(np.argmax(total + noise))
