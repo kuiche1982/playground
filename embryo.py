@@ -439,7 +439,6 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
     for step in range(n_steps):
         smell = world.smell_gradient()
         vision = world.see()
-        lang_input = lang.get_input()
 
         if step % 200 == 0:
             # 给随机指令，然后在指令方向上放个食物（听指令就有奖励）
@@ -455,6 +454,8 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
                     world.grid[food_r, food_c] = world.FOOD
             command_total += 1
             just_got_command = True
+
+        lang_input = lang.get_input()  # 先set_command，再get_input
 
         sensory = np.concatenate([vision, lang_input])
 
@@ -473,7 +474,7 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
         language_bias = lang_input * 2.0
         pfc_bias = pfc.get_bias(task_bias) * 2.0  # L10输出权重调大，对决策影响更大
         ctx_bias = ctx.get_gain(ctx_gain)  # L8上下文调制增益
-        total = smell * 0.0 + habit * 1.0 + spatial * 0.5 + imagined * 0.8 + language_bias * 3.0 + pfc_bias + ctx_bias  # 调大语言偏置权重
+        total = smell * 0.0 + habit * 1.0 + spatial * 0.5 + imagined * 0.8 + language_bias * 6.0 + pfc_bias + ctx_bias  # 再调大语言偏置权重
         noise = np.random.randn(4) * 0.2
         action = int(np.argmax(total + noise))
 
