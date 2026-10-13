@@ -374,8 +374,8 @@ class PrefrontalCortex:
         self.n_input = n_input
         self.n_output = n_output
         self.lr = lr
-        # 初始权重很小——婴儿前额叶没发育，几乎没作用
-        self.W = np.random.randn(n_output, n_input).astype(np.float32) * 0.01
+        # 初始权重调大——让L10一开始就有一点听指令的能力
+        self.W = np.random.randn(n_output, n_input).astype(np.float32) * 0.1
         # 抑制维度初始权重调大一点，让它更容易学
         if n_output >= 5:
             self.W[4, :] = np.random.randn(n_input).astype(np.float32) * 0.1
@@ -414,7 +414,7 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
     hip = Hippocampus(world_size=15, decay=0.9995)
     fm = ForwardModel(n_kc=500, n_actions=4, lr=0.1, seed=seed)
     lang = LanguageChannel()
-    pfc = PrefrontalCortex(n_input=6, n_output=5, lr=0.08, seed=seed)  # L10 前额叶（5维：4动作+1抑制）
+    pfc = PrefrontalCortex(n_input=6, n_output=5, lr=0.15, seed=seed)  # L10 前额叶（学习速率加大）
     ctx = ContextModulator(n_input=4, n_output=4, lr=0.06, seed=seed)    # L8 上下文调制（可学习，婴儿状态）
 
     # 从checkpoint继续训练（调参用）
@@ -617,4 +617,4 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
 
 
 if __name__ == "__main__":
-    run(n_steps=100000, seed=42)
+    run(n_steps=50000, seed=42)
