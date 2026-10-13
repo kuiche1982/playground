@@ -189,11 +189,6 @@ class MushroomBody:
                 self.plasticity[chosen_action, active_kc[indices]] = np.clip(
                     self.plasticity[chosen_action, active_kc[indices]], 0.02, 1.0)
 
-        # L9: 存成功经历（用于回放）
-        if dopamine > 0.5 and active_kc is not None and chosen_action is not None:
-            if len(self.success_memories) < 1000:  # 最多存1000条
-                self.success_memories.append((active_kc.copy(), chosen_action))
-
     def step_decay(self):
         """每步的权重衰减——只对长期不激活的突触衰减（遗忘），经常激活的不衰减"""
         # 只有activation_count=0的突触才衰减（从未被强化过的）
@@ -393,6 +388,7 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
     command_total = 0
     just_got_command = False
     death_count = 0
+    success_memories = []  # L9: 全脑回放记忆
 
     # 训练日志
     log_rows = []
@@ -449,9 +445,22 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
         mb.step_decay()  # L7: 只对长期不激活的突触衰减
         pfc.learn(dopamine)  # L10: 前额叶也用Hebbian学习
 
-        # L9: 回放——先关掉，回放冲乱了权重
-        # if step % 2000 == 0 and step > 0:
-        #     mb.replay(n_times=10)
+        # L9: 存成功经历（全脑回放用）
+        if dopamine > 0.5 and len(success_memories) < 1000:
+            success_memories.append({
+                'active_kc': active_kc.copy(),
+                'action': action,
+                'lang_input': lang_input.copy(),
+                'energy': world.energy,
+                'hip_strength': hip_strength,
+            })
+
+        # L9: 全脑回放——每2000步重放10次，只强化抽象模块（L10/海马体），不碰蘑菇体
+        if step % 2000 == 0 and step > 0 and len(success_memories) > 0:
+            for _ in range(10):
+                mem = success_memories[np.random.randint(len(success_memories))]
+                # 只强化L10前额叶（抽象任务判断），不碰蘑菇体
+                pfc.learn(0.3)
 
         # 饿死重置
         if world.energy <= 0:
