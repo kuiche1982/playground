@@ -302,13 +302,35 @@
   <text x="80" y="280" fill="#d29922" font-size="11">自上而下</text>
   <text x="80" y="295" fill="#d29922" font-size="11">反馈</text>
 
-  <!-- 运动皮层 -->
-  <rect x="350" y="570" width="300" height="55" rx="8" fill="#e94560" stroke="#ff7b72" stroke-width="2"/>
-  <text x="500" y="592" text-anchor="middle" fill="#fff" font-size="14" font-weight="bold">运动皮层（M1）</text>
-  <text x="500" y="610" text-anchor="middle" fill="#ffd6d6" font-size="11">动作输出</text>
+  <!-- 基底神经节 -->
+  <rect x="100" y="550" width="200" height="55" rx="6" fill="#2d4059" stroke="#58a6ff"/>
+  <text x="200" y="572" text-anchor="middle" fill="#fff" font-size="12" font-weight="bold">基底神经节（纹状体）</text>
+  <text x="200" y="590" text-anchor="middle" fill="#8b949e" font-size="10">动作发起/抑制控制/习惯形成</text>
 
-  <!-- 前额叶→运动皮层 箭头 -->
-  <line x1="500" y1="510" x2="500" y2="570" stroke="#8b949e" stroke-width="2" marker-end="url(#arrow2)"/>
+  <!-- 前额叶→基底神经节 -->
+  <line x1="350" y1="510" x2="250" y2="550" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arrow2)"/>
+
+  <!-- 伏隔核→基底神经节（多巴胺奖励） -->
+  <line x1="600" y1="375" x2="280" y2="550" stroke="#3fb950" stroke-width="1.5" stroke-dasharray="4" marker-end="url(#arrow2)"/>
+
+  <!-- 小脑 -->
+  <rect x="700" y="550" width="200" height="55" rx="6" fill="#2d4059" stroke="#58a6ff"/>
+  <text x="800" y="572" text-anchor="middle" fill="#fff" font-size="12" font-weight="bold">小脑</text>
+  <text x="800" y="590" text-anchor="middle" fill="#8b949e" font-size="10">运动协调/平衡/精确动作</text>
+
+  <!-- 运动皮层 -->
+  <rect x="350" y="550" width="300" height="55" rx="8" fill="#e94560" stroke="#ff7b72" stroke-width="2"/>
+  <text x="500" y="572" text-anchor="middle" fill="#fff" font-size="14" font-weight="bold">运动皮层（M1）</text>
+  <text x="500" y="590" text-anchor="middle" fill="#ffd6d6" font-size="11">动作输出</text>
+
+  <!-- 基底神经节→运动皮层 -->
+  <line x1="300" y1="577" x2="350" y2="577" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arrow2)"/>
+
+  <!-- 小脑→运动皮层 -->
+  <line x1="700" y1="577" x2="650" y2="577" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arrow2)"/>
+
+  <!-- 运动皮层→小脑（感觉反馈） -->
+  <path d="M 650 590 Q 750 620 780 605" stroke="#8b949e" stroke-width="1" fill="none" stroke-dasharray="3"/>
 
   <!-- 脑干/脊髓 -->
   <rect x="350" y="670" width="300" height="50" rx="6" fill="#2d4059" stroke="#58a6ff"/>
