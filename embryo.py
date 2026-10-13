@@ -414,7 +414,7 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
     hip = Hippocampus(world_size=15, decay=0.9995)
     fm = ForwardModel(n_kc=500, n_actions=4, lr=0.1, seed=seed)
     lang = LanguageChannel()
-    pfc = PrefrontalCortex(n_input=6, n_output=5, lr=0.15, seed=seed)  # L10 前额叶（学习速率加大）
+    pfc = PrefrontalCortex(n_input=6, n_output=5, lr=0.15, seed=seed)  # L10学习速率恢复
     ctx = ContextModulator(n_input=4, n_output=4, lr=0.06, seed=seed)    # L8 上下文调制（可学习，婴儿状态）
 
     # 从checkpoint继续训练（调参用）
@@ -525,10 +525,10 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
         # 刚收到指令那一步：立即给多巴胺（预判）
         if just_got_command:
             if action == lang.command:
-                dopamine += 3.0  # 奖励加大
+                dopamine += 3.0  # 恢复最佳奖励
                 command_followed += 1  # 单步判定统计
             else:
-                dopamine -= 1.5  # 惩罚加大
+                dopamine -= 1.5  # 恢复最佳惩罚
 
         # 20步窗口结束：只用于训练，不统计
         if cmd_window > 0:
@@ -617,4 +617,4 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
 
 
 if __name__ == "__main__":
-    run(n_steps=100000, seed=42)
+    run(n_steps=200000, seed=42)
