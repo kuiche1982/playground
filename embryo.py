@@ -367,7 +367,7 @@ class ContextModulator:
 
 class PrefrontalCortex:
     """L10: 前额叶——可学习的小网络，初始权重很小（婴儿状态）"""
-    def __init__(self, n_input=6, n_output=4, lr=0.05, seed=None):
+    def __init__(self, n_input=6, n_output=5, lr=0.05, seed=None):
         if seed is not None:
             np.random.seed(seed)
         self.n_input = n_input
@@ -379,12 +379,14 @@ class PrefrontalCortex:
         self.trace_decay = 0.95  # 拉长trace，解决指令在前、奖励在后的信用分配
 
     def forward(self, lang_cmd, energy, hip_strength):
-        """前向：输入6维 → 输出4维任务模式偏好"""
+        """前向：输入6维 → 输出5维（前4维动作偏置，第5维抑制系数）"""
         x = np.concatenate([lang_cmd, [energy], [hip_strength]])
         out = self.W @ x
         # 更新trace
         self.trace *= self.trace_decay
         self.trace[:, :] += x[None, :]  # 所有输出都记录输入trace
+        # 第5维用sigmoid压到0-1之间（抑制系数）
+        out[4] = 1.0 / (1.0 + np.exp(-out[4]))  # sigmoid
         return out
 
     def learn(self, dopamine):
@@ -395,8 +397,8 @@ class PrefrontalCortex:
         np.clip(self.W, -0.5, 0.5, out=self.W)
 
     def get_bias(self, task_bias):
-        """输出任务偏置给决策层"""
-        return task_bias * 1.0  # 初始偏置小，但学习后会慢慢变大
+        """输出任务偏置给决策层（前4维是动作偏置，第5维是抑制系数）"""
+        return task_bias[:4] * 1.0  # 只取前4维动作偏置
 
 
 def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.csv",
@@ -408,7 +410,7 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
     hip = Hippocampus(world_size=15, decay=0.9995)
     fm = ForwardModel(n_kc=500, n_actions=4, lr=0.1, seed=seed)
     lang = LanguageChannel()
-    pfc = PrefrontalCortex(n_input=6, n_output=4, lr=0.08, seed=seed)  # L10 前额叶（可学习，中等速率）
+    pfc = PrefrontalCortex(n_input=6, n_output=5, lr=0.08, seed=seed)  # L10 前额叶（5维：4动作+1抑制）
     ctx = ContextModulator(n_input=4, n_output=4, lr=0.06, seed=seed)    # L8 上下文调制（可学习，婴儿状态）
 
     # 从checkpoint继续训练（调参用）
@@ -463,8 +465,8 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
         hip_strength = hip.memory[world.pos[0], world.pos[1]] if 0 <= world.pos[0] < 15 and 0 <= world.pos[1] < 15 else 0
         task_bias = pfc.forward(lang_input, world.energy, hip_strength)
 
-        # L8 上下文调制：输入L10输出，输出动作增益（婴儿状态，初始几乎没作用）
-        ctx_gain = ctx.forward(task_bias)
+        # L8 上下文调制：输入L10前4维输出，输出动作增益（婴儿状态，初始几乎没作用）
+        ctx_gain = ctx.forward(task_bias[:4])
 
         active_kc = mb.encode(sensory)
         spatial = hip.spatial_bias(world.pos)
@@ -473,8 +475,11 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
         habit = mb.decide(active_kc)
         language_bias = lang_input * (3.0 + 4.0 * world.energy)  # 调大基线：饿了也有点听指令
         pfc_bias = pfc.get_bias(task_bias) * 2.0  # L10输出权重调大，对决策影响更大
+        inhibit = task_bias[4]  # L10抑制系数（0-1），主动压低本能驱力
+        smell_weight = 1.0 * (1.0 - 0.5 * inhibit)  # 抑制最多压一半
+        habit_weight = 1.0 * (1.0 - 0.5 * inhibit)
         ctx_bias = ctx.get_gain(ctx_gain)  # L8上下文调制增益
-        total = smell * 1.0 + habit * 1.0 + spatial * 0.5 + imagined * 0.8 + language_bias + pfc_bias + ctx_bias  # 饥饿度平衡语言权重
+        total = smell * smell_weight + habit * habit_weight + spatial * 0.5 + imagined * 0.8 + language_bias + pfc_bias + ctx_bias
         noise = np.random.randn(4) * 0.2
         action = int(np.argmax(total + noise))
 
