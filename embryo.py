@@ -1,13 +1,14 @@
 """
-Embryo v3.0: L0-L5 完整系统
+Embryo v4.0: L0-L6 完整系统
   L0 身体+世界：2D grid、4方向动作、能量条
   L1 先天趋性：朝气味浓度高的方向走（硬编码，不学）
-  L2 感觉编码：KC稀疏编码（视觉输入）
-  L3 习惯层：蘑菇体Hebbian学习，学会"看到cue就往那走"
-  L4 空间记忆：海马体，记住食物出现过的位置
-  L5 内部模拟：前向模型，在脑子里试动作，不真撞
+  L2 感觉编码：KC稀疏编码（视觉+语言输入）
+  L3 习惯层：蘑菇体Hebbian学习
+  L4 空间记忆：海马体，记住食物位置
+  L5 内部模拟：前向模型，想象动作结果
+  L6 语言通道：词与动作锚定，听懂指令
 
-决策 = 气味 + 视觉习惯 + 空间记忆 + 想象（前向模型）
+决策 = 气味 + 视觉习惯 + 空间记忆 + 想象 + 语言指令
 """
 import numpy as np
 
@@ -129,8 +130,8 @@ class World:
 
 
 class MushroomBody:
-    """L2+L3: 蘑菇体（视觉学习）"""
-    def __init__(self, n_input=16, n_kc=400, n_actions=4,
+    """L2+L3: 蘑菇体（视觉+语言学习）"""
+    def __init__(self, n_input=20, n_kc=500, n_actions=4,
                  lr=0.15, trace_decay=0.85, seed=None):
         if seed is not None:
             np.random.seed(seed)
@@ -143,8 +144,8 @@ class MushroomBody:
         self.W_out = np.random.randn(n_actions, n_kc).astype(np.float32) * 0.01
         self.trace = np.zeros((n_actions, n_kc), dtype=np.float32)
 
-    def encode(self, vision):
-        kc_acts = self.W_in @ vision
+    def encode(self, sensory):
+        kc_acts = self.W_in @ sensory
         return np.argpartition(kc_acts, -self.n_active)[-self.n_active:]
 
     def decide(self, active_kc):
@@ -187,71 +188,100 @@ class Hippocampus:
 
 
 class ForwardModel:
-    """L5: 前向模型（内部模拟）
-    学会：在当前状态下，做某个动作 → 下一步会看到什么/得到什么
-    决策时在脑子里试每个动作，选预期最好的那个"""
-
-    def __init__(self, n_kc=400, n_actions=4, lr=0.1, seed=None):
+    """L5: 前向模型（内部模拟）"""
+    def __init__(self, n_kc=500, n_actions=4, lr=0.1, seed=None):
         if seed is not None:
             np.random.seed(seed)
         self.n_actions = n_actions
         self.lr = lr
-        # (当前KC状态, 动作) → 预期价值（会不会吃到食物）
-        # 简化：用一个线性模型，KC状态 × 动作 → 预期奖励
         self.W_pred = np.random.randn(n_actions, n_kc).astype(np.float32) * 0.01
         self._prev_kc = None
         self._prev_action = None
 
     def observe(self, active_kc, action, ate, bumped):
-        """每次做完动作，更新前向模型"""
         if self._prev_kc is not None:
-            # 实际结果：吃到食物=+1，撞墙=-0.5，otherwise=0
             target = 1.0 if ate else (-0.5 if bumped else 0.0)
-            # 预测误差
             pred = self.W_pred[self._prev_action, self._prev_kc].sum()
             error = target - pred
-            # 更新权重
             self.W_pred[self._prev_action, self._prev_kc] += self.lr * error
             np.clip(self.W_pred, -1.0, 1.0, out=self.W_pred)
         self._prev_kc = active_kc
         self._prev_action = action
 
     def imagine(self, active_kc):
-        """对4个动作分别模拟预期结果，返回每个动作的预期价值"""
         return self.W_pred[:, active_kc].sum(axis=1)
+
+
+class LanguageChannel:
+    """L6: 语言通道
+    4个词：上、下、左、右
+    听到指令 → 对应的语言维度激活 → 和动作锚定"""
+
+    WORDS = ["上", "下", "左", "右"]
+
+    def __init__(self):
+        self.command = None  # 当前指令（0-3对应4个方向）
+
+    def set_command(self, word_idx):
+        """设置当前指令：0=上, 1=下, 2=左, 3=右"""
+        self.command = word_idx
+
+    def get_input(self):
+        """返回4维语言向量：听到指令就对应维度=1"""
+        vec = np.zeros(4, dtype=np.float32)
+        if self.command is not None:
+            vec[self.command] = 1.0
+        return vec
 
 
 def run(n_steps=20000, seed=42, verbose=True):
     world = World(size=15, n_food=6, n_walls=3, n_cues=6, seed=seed)
-    mb = MushroomBody(n_input=16, n_kc=400, n_actions=4, lr=0.15, trace_decay=0.85, seed=seed)
+    mb = MushroomBody(n_input=20, n_kc=500, n_actions=4, lr=0.15, trace_decay=0.85, seed=seed)
     hip = Hippocampus(world_size=15, decay=0.9995)
-    fm = ForwardModel(n_kc=400, n_actions=4, lr=0.1, seed=seed)
+    fm = ForwardModel(n_kc=500, n_actions=4, lr=0.1, seed=seed)
+    lang = LanguageChannel()
 
     foods_eaten = 0
     eat_times = []
     last_food_step = 0
-    imagination_used = 0  # 靠想象（前向模型）做出的决策次数
+    command_followed = 0  # 指令发布后第一步就对了的次数
+    command_total = 0
+    just_got_command = False  # 刚发布新指令的标记
 
     for step in range(n_steps):
         smell = world.smell_gradient()
         vision = world.see()
-        active_kc = mb.encode(vision)
+        lang_input = lang.get_input()
+
+        # 每200步随机给一次指令（训练语言理解）
+        if step % 200 == 0:
+            lang.set_command(np.random.randint(4))
+            command_total += 1
+            just_got_command = True
+
+        # 感觉输入 = 视觉(16维) + 语言(4维) = 20维
+        sensory = np.concatenate([vision, lang_input])
+        active_kc = mb.encode(sensory)
+
         spatial = hip.spatial_bias(world.pos)
-        imagined = fm.imagine(active_kc)  # L5：在脑子里试每个动作
+        imagined = fm.imagine(active_kc)
 
-        smell_max = smell.max()
-        has_cue = (vision.reshape(4, 4)[:, 2] > 0).any()
-
-        # 决策 = 气味 + 视觉习惯 + 空间记忆 + 想象
+        # 决策 = 气味 + 视觉习惯 + 空间记忆 + 想象 + 语言指令
         habit = mb.decide(active_kc)
-        total = smell * 1.0 + habit * 1.0 + spatial * 0.5 + imagined * 0.8
+        language_bias = lang_input * 2.0  # 指令权重高
+        total = smell * 1.0 + habit * 1.0 + spatial * 0.5 + imagined * 0.8 + language_bias
         noise = np.random.randn(4) * 0.2
         action = int(np.argmax(total + noise))
+
+        # 检查有没有听懂指令（只在刚发布指令的那一步算）
+        if just_got_command and action == lang.command:
+            command_followed += 1
+        just_got_command = False
 
         ate, bumped = world.step(action)
         mb.update_trace(active_kc, action)
         hip.decay_memory()
-        fm.observe(active_kc, action, ate, bumped)  # 更新前向模型
+        fm.observe(active_kc, action, ate, bumped)
 
         if ate:
             dopamine = 1.0
@@ -283,6 +313,7 @@ def run(n_steps=20000, seed=42, verbose=True):
     print("\n===== 最终结果 =====")
     print(f"总步数: {n_steps}")
     print(f"吃食物总数: {foods_eaten}")
+    print(f"听懂指令: {command_followed}/{command_total} 次 ({command_followed/max(1,command_total)*100:.1f}%)")
     if len(eat_times) >= 30:
         first_10 = np.mean(eat_times[:10])
         last_10 = np.mean(eat_times[-10:])
