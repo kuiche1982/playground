@@ -1,12 +1,13 @@
 """
-Embryo v2.0: L0-L4 完整系统
+Embryo v3.0: L0-L5 完整系统
   L0 身体+世界：2D grid、4方向动作、能量条
   L1 先天趋性：朝气味浓度高的方向走（硬编码，不学）
   L2 感觉编码：KC稀疏编码（视觉输入）
   L3 习惯层：蘑菇体Hebbian学习，学会"看到cue就往那走"
-  L4 空间记忆：海马体，记住食物出现过的位置，没线索时往记忆强的地方走
+  L4 空间记忆：海马体，记住食物出现过的位置
+  L5 内部模拟：前向模型，在脑子里试动作，不真撞
 
-决策 = 先天气味 + 视觉习惯 + 空间记忆
+决策 = 气味 + 视觉习惯 + 空间记忆 + 想象（前向模型）
 """
 import numpy as np
 
@@ -161,15 +162,13 @@ class MushroomBody:
 
 
 class Hippocampus:
-    """L4: 海马体（空间记忆）
-    记住哪里有食物，没线索的时候往记忆强的地方走"""
-    def __init__(self, world_size=15, decay=0.999):
+    """L4: 海马体（空间记忆）"""
+    def __init__(self, world_size=15, decay=0.9995):
         self.size = world_size
         self.memory = np.zeros((world_size, world_size), dtype=np.float32)
         self.decay = decay
 
     def record_food(self, pos):
-        """吃到食物时，在那个位置记一笔"""
         r, c = int(pos[0]), int(pos[1])
         self.memory[r, c] += 1.0
 
@@ -177,11 +176,9 @@ class Hippocampus:
         self.memory *= self.decay
 
     def spatial_bias(self, pos):
-        """4个方向哪个方向记忆强，就给那个方向偏置"""
         bias = np.zeros(4, dtype=np.float32)
         r, c = int(pos[0]), int(pos[1])
         for i, (dr, dc) in enumerate(World.ACTIONS):
-            # 往那个方向走2步，算那片区域的记忆强度
             for dist in [1, 2, 3]:
                 nr, nc = r + dr * dist, c + dc * dist
                 if 0 <= nr < self.size and 0 <= nc < self.size:
@@ -189,34 +186,72 @@ class Hippocampus:
         return bias
 
 
+class ForwardModel:
+    """L5: 前向模型（内部模拟）
+    学会：在当前状态下，做某个动作 → 下一步会看到什么/得到什么
+    决策时在脑子里试每个动作，选预期最好的那个"""
+
+    def __init__(self, n_kc=400, n_actions=4, lr=0.1, seed=None):
+        if seed is not None:
+            np.random.seed(seed)
+        self.n_actions = n_actions
+        self.lr = lr
+        # (当前KC状态, 动作) → 预期价值（会不会吃到食物）
+        # 简化：用一个线性模型，KC状态 × 动作 → 预期奖励
+        self.W_pred = np.random.randn(n_actions, n_kc).astype(np.float32) * 0.01
+        self._prev_kc = None
+        self._prev_action = None
+
+    def observe(self, active_kc, action, ate, bumped):
+        """每次做完动作，更新前向模型"""
+        if self._prev_kc is not None:
+            # 实际结果：吃到食物=+1，撞墙=-0.5，otherwise=0
+            target = 1.0 if ate else (-0.5 if bumped else 0.0)
+            # 预测误差
+            pred = self.W_pred[self._prev_action, self._prev_kc].sum()
+            error = target - pred
+            # 更新权重
+            self.W_pred[self._prev_action, self._prev_kc] += self.lr * error
+            np.clip(self.W_pred, -1.0, 1.0, out=self.W_pred)
+        self._prev_kc = active_kc
+        self._prev_action = action
+
+    def imagine(self, active_kc):
+        """对4个动作分别模拟预期结果，返回每个动作的预期价值"""
+        return self.W_pred[:, active_kc].sum(axis=1)
+
+
 def run(n_steps=20000, seed=42, verbose=True):
     world = World(size=15, n_food=6, n_walls=3, n_cues=6, seed=seed)
     mb = MushroomBody(n_input=16, n_kc=400, n_actions=4, lr=0.15, trace_decay=0.85, seed=seed)
     hip = Hippocampus(world_size=15, decay=0.9995)
+    fm = ForwardModel(n_kc=400, n_actions=4, lr=0.1, seed=seed)
 
     foods_eaten = 0
     eat_times = []
     last_food_step = 0
-    memory_only_eats = 0  # 没气味没视觉，纯靠空间记忆找到的食物
+    imagination_used = 0  # 靠想象（前向模型）做出的决策次数
 
     for step in range(n_steps):
         smell = world.smell_gradient()
         vision = world.see()
         active_kc = mb.encode(vision)
         spatial = hip.spatial_bias(world.pos)
+        imagined = fm.imagine(active_kc)  # L5：在脑子里试每个动作
 
         smell_max = smell.max()
         has_cue = (vision.reshape(4, 4)[:, 2] > 0).any()
 
-        # 决策 = 气味 + 视觉习惯 + 空间记忆
+        # 决策 = 气味 + 视觉习惯 + 空间记忆 + 想象
         habit = mb.decide(active_kc)
-        total = smell * 1.0 + habit * 1.0 + spatial * 0.5
+        total = smell * 1.0 + habit * 1.0 + spatial * 0.5 + imagined * 0.8
         noise = np.random.randn(4) * 0.2
         action = int(np.argmax(total + noise))
 
         ate, bumped = world.step(action)
         mb.update_trace(active_kc, action)
         hip.decay_memory()
+        fm.observe(active_kc, action, ate, bumped)  # 更新前向模型
 
         if ate:
             dopamine = 1.0
@@ -224,9 +259,6 @@ def run(n_steps=20000, seed=42, verbose=True):
             eat_times.append(step - last_food_step)
             last_food_step = step
             hip.record_food(world.pos)
-            # 没气味、没看到cue，纯靠记忆走到的
-            if smell_max < 0.1 and not has_cue:
-                memory_only_eats += 1
         elif bumped:
             dopamine = -0.3
         else:
@@ -238,20 +270,19 @@ def run(n_steps=20000, seed=42, verbose=True):
             if verbose:
                 recent = eat_times[-5:] if len(eat_times) >= 5 else eat_times
                 avg = np.mean(recent) if recent else float('inf')
-                print(f"[{step:5d}] 饿死！吃了{foods_eaten}个，记忆找食:{memory_only_eats}次，平均:{avg:.1f}步")
+                print(f"[{step:5d}] 饿死！吃了{foods_eaten}个，平均:{avg:.1f}步")
             world = World(size=15, n_food=6, n_walls=3, n_cues=6, seed=seed + step)
             last_food_step = step
 
         if verbose and step % 2000 == 0:
             recent = eat_times[-10:] if len(eat_times) >= 10 else eat_times
             avg = np.mean(recent) if recent else float('inf')
-            print(f"[{step:5d}] 食物:{foods_eaten:4d}  记忆找食:{memory_only_eats:4d}  "
+            print(f"[{step:5d}] 食物:{foods_eaten:4d}  "
                   f"平均找食:{avg:.1f}步  能量:{world.energy:.2f}")
 
     print("\n===== 最终结果 =====")
     print(f"总步数: {n_steps}")
     print(f"吃食物总数: {foods_eaten}")
-    print(f"纯靠空间记忆找食: {memory_only_eats} 次 ({memory_only_eats/max(1,foods_eaten)*100:.1f}%)")
     if len(eat_times) >= 30:
         first_10 = np.mean(eat_times[:10])
         last_10 = np.mean(eat_times[-10:])
