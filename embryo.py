@@ -441,6 +441,8 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
     cmd_window = 0
     cmd_start_pos = None
     cmd_target_pos = None
+    # L11 工作记忆：指令锁存器
+    latent = np.zeros(4, dtype=np.float32)
 
     # 训练日志
     log_rows = []
@@ -465,6 +467,8 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
                     world.temp_foods.append((food_r, food_c, 20))  # 寿命20步
             command_total += 1
             just_got_command = True
+            # L11 工作记忆：新指令完全覆盖旧记忆
+            latent = lang.get_input()
             # 20步窗口判定：记录起始位置和目标位置
             cmd_start_pos = world.pos.copy()
             cmd_target_pos = np.array([food_r, food_c])
@@ -496,7 +500,7 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
         imagined = fm.imagine(active_kc)
 
         habit = mb.decide(active_kc)
-        language_bias = lang_input * (3.0 + 4.0 * world.energy)  # 恢复基线，让虫子一开始就听指令
+        language_bias = lang_input * (3.0 + 4.0 * world.energy)  # 恢复瞬时指令
         pfc_bias = pfc.get_bias(task_bias)  # L10输出权重恢复1.0
         inhibit = task_bias[4]  # L10抑制系数（0-1），主动压低本能驱力
         smell_weight = 1.0 * (1.0 - 1.0 * inhibit)  # 抑制满功率，直接压本能
