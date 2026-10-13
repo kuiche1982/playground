@@ -39,7 +39,7 @@ class Gene:
 
 
 class Bug:
-    """A living bug with genes, sex, energy."""
+    """A living bug with genes, sex, energy, and learning ability."""
     def __init__(self, pos, gene, sex=None):
         self.pos = np.array(pos)
         self.gene = gene
@@ -49,36 +49,61 @@ class Bug:
         self.food_eaten = 0
         self.offspring = 0
         self._prev_action = None
+        self._prev_sensory = None
+        # Learning matrix: sensory (25) -> action (8)
+        # This is W — learned through experience, not genetic
+        self.W = np.zeros((8, 25))
+
+    def learn(self, sensory, action, reward):
+        """Hebbian learning: reinforce or weaken the sensory-action pair.
+        reward > 0: good outcome (found food)
+        reward < 0: bad outcome (hit wall, starving)
+        """
+        lr = 0.1
+        self.W[action] += lr * reward * sensory
+        # Clip to prevent explosion
+        self.W = np.clip(self.W, -1.0, 1.0)
 
     def decide(self, sensory, world):
-        """Simple decision: move towards food, avoid walls."""
+        """Decision: innate bias + learned associations."""
+        # Learned component: what does my experience say?
+        learned = self.W @ sensory
+
         food_in_view = np.argwhere(sensory.reshape(5, 5) == 2)
         if len(food_in_view) > 0:
-            # Move towards nearest food
+            # Move towards nearest food (innate reflex)
             dr, dc = food_in_view[0] - 2
-            if dr < 0: action = 0
-            elif dr > 0: action = 4
-            else: action = 2 if dc > 0 else 6
+            if dr < 0: innate = 0
+            elif dr > 0: innate = 4
+            else: innate = 2 if dc > 0 else 6
+            # Combine: innate + learned
+            total = np.zeros(8)
+            total[innate] += 2.0  # innate reflex is strong
+            total += learned * self.gene.smell_weight  # learned adds on top
+            action = np.argmax(total)
         else:
-            # Explore with genetic noise
+            # No food in view: use learned + genetic exploration
+            total = learned * self.gene.smell_weight
+            if self._prev_action is not None:
+                total[self._prev_action] += self.gene.momentum
             if np.random.random() < self.gene.explore_noise:
                 action = np.random.randint(8)
             else:
-                action = self._prev_action if self._prev_action is not None else np.random.randint(8)
-        # Momentum: keep going straight
-        if self._prev_action is not None and np.random.random() < self.gene.momentum:
-            action = self._prev_action
+                action = np.argmax(total)
+
+        self._prev_sensory = sensory.copy()
         self._prev_action = action
         return action
 
 
 class Ecosystem:
-    """The world: grid, food, bugs, seasons."""
+    """The world: grid, food, bugs, seasons, cues, and learned associations."""
     def __init__(self, size=20, seed=42):
         np.random.seed(seed)
         self.size = size
         self.grid = np.zeros((size, size))
         self.food_positions = []
+        self.cue_positions = []  # blue cues: predict food nearby
         self.bugs = []
         self.step_count = 0
         self.born_count = 0
@@ -88,6 +113,13 @@ class Ecosystem:
         for _ in range(10):
             r, c = np.random.randint(2, size-2, 2)
             self.grid[r, c] = -1
+
+        # Place blue cues (they predict food nearby — bugs must learn this association)
+        for _ in range(4):
+            r, c = np.random.randint(0, size, 2)
+            while self.grid[r, c] != 0 or (r, c) in self.cue_positions:
+                r, c = np.random.randint(0, size, 2)
+            self.cue_positions.append((r, c))
 
         # Start with 10 bugs
         for _ in range(10):
@@ -105,15 +137,23 @@ class Ecosystem:
         return SEASONS[self.season]
 
     def respawn_food(self):
-        """Respawn food based on current season."""
+        """Respawn food near blue cues — bugs must learn this association."""
         target = SEASON_FOOD[self.season]
         while len(self.food_positions) < target:
-            r, c = np.random.randint(0, self.size, 2)
+            # Pick a random cue, then place food nearby
+            if self.cue_positions:
+                cue_r, cue_c = self.cue_positions[np.random.randint(len(self.cue_positions))]
+                r_offset, c_offset = np.random.randint(-5, 6, 2)
+                r, c = cue_r + r_offset, cue_c + c_offset
+                r = max(0, min(self.size-1, r))
+                c = max(0, min(self.size-1, c))
+            else:
+                r, c = np.random.randint(0, self.size, 2)
             if self.grid[r, c] != -1 and (r, c) not in self.food_positions:
                 self.food_positions.append((r, c))
 
     def sense(self, bug):
-        """What does this bug see?"""
+        """What does this bug see? Food, walls, and blue cues."""
         r, c = bug.pos
         view = np.zeros((5, 5))
         for dr in range(-2, 3):
@@ -121,9 +161,11 @@ class Ecosystem:
                 rr, cc = r + dr, c + dc
                 if 0 <= rr < self.size and 0 <= cc < self.size:
                     if (rr, cc) in self.food_positions:
-                        view[dr+2, dc+2] = 2
+                        view[dr+2, dc+2] = 2  # food
+                    elif (rr, cc) in self.cue_positions:
+                        view[dr+2, dc+2] = 3  # blue cue
                     elif self.grid[rr, cc] == -1:
-                        view[dr+2, dc+2] = -1
+                        view[dr+2, dc+2] = -1  # wall
         return view.flatten()
 
     def step(self):
@@ -149,21 +191,38 @@ class Ecosystem:
             dc_list = [0, 1, 1, 1, 0, -1, -1, -1]
             dr, dc = dr_list[action], dc_list[action]
             nr, nc = int(bug.pos[0] + dr), int(bug.pos[1] + dc)
+            bumped = False
             if 0 <= nr < self.size and 0 <= nc < self.size and self.grid[nr, nc] != -1:
                 bug.pos = np.array([nr, nc])
+            else:
+                bumped = True  # hit wall or boundary
 
             # Eat food
+            ate = False
             for (fr, fc) in self.food_positions:
                 if (nr, nc) == (fr, fc):
                     bug.energy = min(1.0, bug.energy + 0.3)
                     bug.food_eaten += 1
+                    ate = True
                     self.food_positions.remove((fr, fc))
-                    # Respawn food immediately — eat one, get one
-                    new_r, new_c = np.random.randint(0, self.size, 2)
+                    # Respawn food near a random cue
+                    if self.cue_positions:
+                        cue_r, cue_c = self.cue_positions[np.random.randint(len(self.cue_positions))]
+                        new_r, new_c = cue_r + np.random.randint(-5, 6), cue_c + np.random.randint(-5, 6)
+                        new_r = max(0, min(self.size-1, new_r))
+                        new_c = max(0, min(self.size-1, new_c))
+                    else:
+                        new_r, new_c = np.random.randint(0, self.size, 2)
                     while self.grid[new_r, new_c] == -1 or (new_r, new_c) in self.food_positions:
                         new_r, new_c = np.random.randint(0, self.size, 2)
                     self.food_positions.append((new_r, new_c))
                     break
+
+            # Learning: reward for good outcomes, punishment for bad
+            if ate:
+                bug.learn(s, action, reward=1.0)  # found food!
+            elif bumped:
+                bug.learn(s, action, reward=-0.5)  # hit wall
 
             # Energy decay — density dependent: more bugs = more competition = faster decay
             n_bugs = len([b for b in self.bugs if b.alive])
@@ -224,29 +283,30 @@ class Ecosystem:
 
 
 # Setup
-eco = Ecosystem(size=20, seed=42)
+eco = Ecosystem(size=100, seed=42)
 
-# Plot
-fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10))
-ax1.set_xlim(0, 20)
-ax1.set_ylim(0, 20)
+# Plot: left = world, right = population chart
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+ax1.set_xlim(0, 100)
+ax1.set_ylim(0, 100)
 ax1.set_aspect('equal')
 
 # Draw walls
-for r in range(20):
-    for c in range(20):
+for r in range(100):
+    for c in range(100):
         if eco.grid[r, c] == -1:
-            ax1.plot(c, 19-r, 's', color='darkgreen', markersize=10)
+            ax1.plot(c, 99-r, 's', color='darkgreen', markersize=5)
 
-food_scatter = ax1.scatter([], [], color='gold', s=100, marker='s')
-bug_scatter_m = ax1.scatter([], [], color='blue', s=120, marker='^')  # male = triangle
-bug_scatter_f = ax1.scatter([], [], color='pink', s=120, marker='v')  # female = down-triangle
+food_scatter = ax1.scatter([], [], color='gold', s=30, marker='s')
+cue_scatter = ax1.scatter([], [], color='cyan', s=80, marker='D')  # blue cues — bigger
+bug_scatter_m = ax1.scatter([], [], color='blue', s=40, marker='^')  # male = triangle
+bug_scatter_f = ax1.scatter([], [], color='pink', s=40, marker='v')  # female = down-triangle
 
 ax1.set_title('Embryo ecosystem')
 
 # Population plot
 ax2.set_xlim(0, 1000)
-ax2.set_ylim(0, 20)
+ax2.set_ylim(0, 50)
 ax2.set_title('Bug population')
 ax2.set_xlabel('Steps')
 pop_line, = ax2.plot([], [], color='red', label='Population')
@@ -264,12 +324,17 @@ def update(frame):
 
     # Update food
     fx = [c for r, c in eco.food_positions]
-    fy = [19-r for r, c in eco.food_positions]
+    fy = [99-r for r, c in eco.food_positions]
     food_scatter.set_offsets(np.c_[fx, fy])
 
+    # Update cues
+    cx = [c for r, c in eco.cue_positions]
+    cy = [99-r for r, c in eco.cue_positions]
+    cue_scatter.set_offsets(np.c_[cx, cy])
+
     # Update bugs
-    m_pos = [[b.pos[1], 19-b.pos[0]] for b in eco.bugs if b.sex == 'M']
-    f_pos = [[b.pos[1], 19-b.pos[0]] for b in eco.bugs if b.sex == 'F']
+    m_pos = [[b.pos[1], 99-b.pos[0]] for b in eco.bugs if b.sex == 'M']
+    f_pos = [[b.pos[1], 99-b.pos[0]] for b in eco.bugs if b.sex == 'F']
     bug_scatter_m.set_offsets(m_pos if m_pos else [[-10, -10]])
     bug_scatter_f.set_offsets(f_pos if f_pos else [[-10, -10]])
 
