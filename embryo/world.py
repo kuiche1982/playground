@@ -6,7 +6,7 @@ import numpy as np
 
 
 class World:
-    EMPTY, WALL, FOOD = 0, 1, 2
+    EMPTY, WALL, FOOD, CUE = 0, 1, 2, 3  # CUE = neutral cue (Pavlovian)
     # 8 directional actions: 4 cardinal + 4 diagonals
     ACTIONS = [
         (-1, 0),   # 0: up
@@ -20,12 +20,13 @@ class World:
     ]
     VIEW = 5
 
-    def __init__(self, size=20, n_food=8, n_walls=10, seed=None):
+    def __init__(self, size=20, n_food=8, n_walls=10, n_cue=6, seed=None):
         if seed is not None:
             np.random.seed(seed)
         self.size = size
         self.grid = np.full((size, size), self.EMPTY, dtype=int)
         self._place_walls(n_walls)
+        self._place_cue(n_cue)
         self._place_food(n_food)
         self.pos = np.array([size // 2, size // 2], dtype=int)
         self.energy = 1.0
@@ -46,19 +47,46 @@ class World:
                 self.grid[r, c] = self.WALL
                 placed += 1
 
-    def _place_food(self, n):
+    def _place_cue(self, n):
+        """Place neutral cues (blue squares). They mean nothing innately,
+        but food will always spawn near them — agent learns the association."""
+        self.cue_positions = []
         placed = 0
         while placed < n:
             r, c = np.random.randint(1, self.size - 1, 2)
+            if abs(r - self.size // 2) <= 1 and abs(c - self.size // 2) <= 1:
+                continue
             if self.grid[r, c] == self.EMPTY:
+                self.grid[r, c] = self.CUE
+                self.cue_positions.append((r, c))
+                placed += 1
+
+    def _place_food(self, n):
+        """Place food. If cues exist, spawn near them (for Pavlovian learning).
+        Otherwise, random placement."""
+        placed = 0
+        while placed < n:
+            if self.cue_positions:
+                cue_r, cue_c = self.cue_positions[np.random.randint(len(self.cue_positions))]
+                dr, dc = self.ACTIONS[np.random.randint(8)]
+                r, c = cue_r + dr, cue_c + dc
+            else:
+                r, c = np.random.randint(1, self.size - 1, 2)
+            if 0 <= r < self.size and 0 <= c < self.size and self.grid[r, c] == self.EMPTY:
                 self.grid[r, c] = self.FOOD
                 placed += 1
 
     def _respawn_food(self):
+        """Respawn food. If cues exist, spawn near them; otherwise random."""
         for _ in range(50):
-            r, c = np.random.randint(1, self.size - 1, 2)
-            if self.grid[r, c] == self.EMPTY:
-                self.grid[r, c] = self.FOOD
+            if self.cue_positions:
+                cue_r, cue_c = self.cue_positions[np.random.randint(len(self.cue_positions))]
+                dr, dc = self.ACTIONS[np.random.randint(8)]
+                nr, nc = cue_r + dr, cue_c + dc
+            else:
+                nr, nc = np.random.randint(1, self.size - 1, 2)
+            if 0 <= nr < self.size and 0 <= nc < self.size and self.grid[nr, nc] == self.EMPTY:
+                self.grid[nr, nc] = self.FOOD
                 return
 
     def sense(self):

@@ -1,78 +1,102 @@
-"""Brain: Hebbian modulation + spatial memory + random strategy selection (L5)."""
+"""Brain: innate reflex + spatial memory + forward model (L5 prediction).
+
+Instead of just reacting, the brain imagines: "if I step this way, what happens?"
+It learns from experience: (position, action) -> (next position, did I find food?).
+Then at decision time, it simulates a few steps and picks the best path.
+"""
 import numpy as np
 
 
 class Brain:
     def __init__(self, n_sensors=25, n_actions=8, lr=0.2, world_size=20, seed=0):
         np.random.seed(seed)
-        self.W = np.zeros((n_actions, n_sensors), dtype=np.float32)
-        self.lr = lr
-        self._prev_sensory = None
-        self._prev_action = None
-        self.memory_map = np.zeros((world_size, world_size), dtype=np.float32)
         self.world_size = world_size
-        self.user_command = None  # external direction command (0-7 or None)
+        self.user_command = None
 
-    def _scan_memory(self, pos, steps_ahead=2):
-        """Scan all 8 directions, return (best_value, best_dir) from memory."""
+        # Genetic params (B - innate biases, set by evolution)
+        self.momentum_strength = 0.3     # how much it keeps going straight
+        self.explore_noise = 0.5        # how exploratory it is
+        self.smell_weight = 0.5        # how much smell guides it
+
+        # Spatial memory: where food was found
+        self.memory_map = np.zeros((world_size, world_size), dtype=np.float32)
+
+        # Forward model memory: (pos, action) -> (next_pos, food_found)
+        self.experience = {}
+
+        self._prev_pos = None
+        self._prev_action = None
+
+    def _imagine_step(self, pos, action):
+        """Imagine stepping in a direction. Return predicted next position + food probability."""
         r, c = int(pos[0]), int(pos[1])
-        best_val = 0
-        best_dir = -1
-        for dr, dc, idx in [(-1, 0, 0), (1, 0, 1), (0, -1, 2), (0, 1, 3),
-                             (-1, -1, 4), (-1, 1, 5), (1, -1, 6), (1, 1, 7)]:
-            val = 0.0
-            for s in range(1, steps_ahead + 1):
-                nr, nc = r + dr * s, c + dc * s
-                if 0 <= nr < self.world_size and 0 <= nc < self.world_size:
-                    val += self.memory_map[nr, nc] / s
-            if val > best_val:
-                best_val = val
-                best_dir = idx
-        return best_val, best_dir
+        dr, dc = World.ACTIONS[action]
+        nr, nc = r + dr, c + dc
+        # Check bounds and walls (we'd need grid access, but approximate)
+        # Use experience if we've been here before
+        key = (r, c, action)
+        if key in self.experience:
+            return self.experience[key]
+        # Default: just predict we move there
+        return (nr, nc, 0.0)
 
     def decide(self, sensory, innate_bias, hunger, pos):
         food_visible = bool((sensory == 2.0).any())
         if food_visible:
             noise_scale = 0.05
         else:
-            noise_scale = 0.3 + hunger * 0.7
-        learned = self.W @ sensory
-        total = innate_bias + learned
+            # Explore noise is genetic — some bugs are more exploratory
+            noise_scale = self.explore_noise * (0.3 + hunger * 0.7)
 
-        # L5: random strategy selection — instinct / recall / preview
-        # 60% instinct, 20% recall (go to remembered food spot), 20% preview (look ahead)
-        strategy = np.random.choice(['instinct', 'recall', 'preview'], p=[0.6, 0.2, 0.2])
+        total = innate_bias.copy()
 
-        if not food_visible:
-            if strategy == 'recall':
-                val, dir_idx = self._scan_memory(pos, steps_ahead=3)
-                if dir_idx >= 0 and val > 0.1:
-                    total[dir_idx] += val * 3.0  # strong recall pull
-            elif strategy == 'preview':
-                val, dir_idx = self._scan_memory(pos, steps_ahead=2)
-                if dir_idx >= 0 and val > 0.05:
-                    total[dir_idx] += val * 2.0  # lighter preview
+        # Momentum is genetic — some bugs keep going straight more
+        if self._prev_action is not None:
+            total[self._prev_action] += self.momentum_strength
 
-        # User command overrides everything (L6)
+        # L5: forward model — imagine each direction, score by predicted food proximity
+        if not food_visible and hunger > 0.2:
+            r, c = int(pos[0]), int(pos[1])
+            best_score = -1
+            best_dir = -1
+            for action in range(8):
+                nr, nc, ate = self._imagine_step(pos, action)
+                score = 0
+                if 0 <= nr < self.world_size and 0 <= nc < self.world_size:
+                    for dr in range(-2, 3):
+                        for dc in range(-2, 3):
+                            rr, cc = nr + dr, nc + dc
+                            if 0 <= rr < self.world_size and 0 <= cc < self.world_size:
+                                score += self.memory_map[rr, cc]
+                if score > best_score:
+                    best_score = score
+                    best_dir = action
+            if best_dir >= 0 and best_score > 0.05:
+                total[best_dir] += best_score * 2.0
+
+        # User command overrides
         if self.user_command is not None:
             total[self.user_command] += 5.0
 
-        # Momentum
-        if self._prev_action is not None:
-            total[self._prev_action] += 0.3
-
         noise = np.random.randn(len(total)) * noise_scale
         action = int(np.argmax(total + noise))
-        self._prev_sensory = sensory
+        self._prev_pos = pos.copy()
         self._prev_action = action
         return action
 
     def reinforce(self, pos):
-        if self._prev_sensory is not None and self._prev_action is not None:
-            self.W[self._prev_action] += self.lr * self._prev_sensory
-            np.clip(self.W, -1.0, 1.0, out=self.W)
+        """Record experience: when I was at prev_pos and did prev_action, I ended up here and ate food."""
+        if self._prev_pos is not None and self._prev_action is not None:
+            pr, pc = int(self._prev_pos[0]), int(self._prev_pos[1])
+            r, c = int(pos[0]), int(pos[1])
+            key = (pr, pc, self._prev_action)
+            self.experience[key] = (r, c, 1.0)  # ate food
         r, c = int(pos[0]), int(pos[1])
         self.memory_map[r, c] += 1.0
 
     def decay_memory(self):
         self.memory_map *= 0.9999
+
+
+# Import World for ACTIONS lookup (circular import workaround)
+from embryo.world import World

@@ -8,7 +8,7 @@ from embryo.brain import Brain
 
 def main():
     np.random.seed(0)
-    world = World(size=20, n_food=8, n_walls=10, seed=1)
+    world = World(size=20, n_food=8, n_walls=10, n_cue=6, seed=1)
     brain = Brain(n_sensors=25, n_actions=8, lr=0.2, world_size=20, seed=2)
 
     food_count = 0
@@ -25,7 +25,7 @@ def main():
         hunger = 1.0 - world.energy
         action = brain.decide(sensory, innate, hunger, world.pos)
         if _bumped_last:
-            action = (action + np.random.randint(1, 4)) % 4
+            action = (action + np.random.randint(1, 8)) % 8
         ate = world.step(action)
         _bumped_last = world.last_bumped
         brain.decay_memory()
@@ -35,7 +35,10 @@ def main():
         energy_history.append(world.energy)
 
         ax_world.clear()
-        ax_world.imshow(world.grid, cmap='viridis', vmin=0, vmax=2)
+        # Custom colormap: 0=empty(dark purple), 1=wall(teal), 2=food(yellow), 3=cue(blue)
+        from matplotlib.colors import ListedColormap
+        cmap = ListedColormap(['#3a0ca3', '#43aa8b', '#ffd60a', '#4895ef'])
+        ax_world.imshow(world.grid, cmap=cmap, vmin=0, vmax=3)
         ax_world.plot(world.pos[1], world.pos[0], 'r*', markersize=18)
         ax_world.set_title(f"Step {world.steps} | Energy {world.energy:.2f} | Food {food_count}")
         ax_world.set_xticks([]); ax_world.set_yticks([])
