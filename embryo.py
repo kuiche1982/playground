@@ -414,7 +414,8 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
     command_total = 0
     just_got_command = False
     death_count = 0
-    success_memories = []  # L9: 全脑回放记忆
+    success_memories = []  # L9: 正样本（成功经历）
+    failure_memories = []  # L9: 负样本（指令执行错误）
 
     # 训练日志
     log_rows = []
@@ -453,6 +454,16 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
 
         if just_got_command and action == lang.command:
             command_followed += 1
+        elif just_got_command and action != lang.command:
+            # L9: 存负样本——收到指令但执行错误
+            if len(failure_memories) < 500:
+                failure_memories.append({
+                    'active_kc': active_kc.copy(),
+                    'action': action,
+                    'lang_input': lang_input.copy(),
+                    'energy': world.energy,
+                    'hip_strength': hip_strength,
+                })
         just_got_command = False
 
         ate, bumped = world.step(action)
@@ -486,12 +497,20 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
                 'hip_strength': hip_strength,
             })
 
-        # L9: 全脑回放——每2000步重放10次，只强化抽象模块（L10/海马体），不碰蘑菇体
-        if step % 2000 == 0 and step > 0 and len(success_memories) > 0:
-            for _ in range(10):
-                mem = success_memories[np.random.randint(len(success_memories))]
-                # 只强化L10前额叶（抽象任务判断），不碰蘑菇体
-                pfc.learn(0.3)
+        # L9: 全脑回放——每2000步重放，正样本:负样本 = 3:1
+        if step % 2000 == 0 and step > 0:
+            # 正样本回放（75%）
+            for _ in range(8):
+                if len(success_memories) > 0:
+                    mem = success_memories[np.random.randint(len(success_memories))]
+                    pfc.learn(0.3)  # 正多巴胺，强化正确决策
+                    ctx.learn(0.3)
+            # 负样本回放（25%）
+            for _ in range(3):
+                if len(failure_memories) > 0:
+                    mem = failure_memories[np.random.randint(len(failure_memories))]
+                    pfc.learn(-0.25)  # 负多巴胺，抑制错误决策
+                    ctx.learn(-0.25)
 
         # 饿死重置
         if world.energy <= 0:
