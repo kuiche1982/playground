@@ -376,9 +376,9 @@ class PrefrontalCortex:
         self.lr = lr
         # 初始权重调大——让L10一开始就有一点听指令的能力
         self.W = np.random.randn(n_output, n_input).astype(np.float32) * 0.1
-        # 抑制维度初始权重调大一点，让它更容易学
+        # 抑制维度初始权重设成负数，sigmoid≈0.12，几乎不抑制，慢慢学
         if n_output >= 5:
-            self.W[4, :] = np.random.randn(n_input).astype(np.float32) * 0.1
+            self.W[4, :] = -2.0 + np.random.randn(n_input).astype(np.float32) * 0.1
         self.trace = np.zeros((n_output, n_input), dtype=np.float32)
         self.trace_decay = 0.95  # 拉长trace，解决指令在前、奖励在后的信用分配
 
@@ -496,13 +496,13 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
         imagined = fm.imagine(active_kc)
 
         habit = mb.decide(active_kc)
-        language_bias = lang_input * (3.0 + 4.0 * world.energy)  # 调大基线：饿了也有点听指令
-        pfc_bias = pfc.get_bias(task_bias) * 2.0  # L10输出权重调大，对决策影响更大
+        language_bias = lang_input * (3.0 + 4.0 * world.energy)  # 恢复基线，让虫子一开始就听指令
+        pfc_bias = pfc.get_bias(task_bias)  # L10输出权重恢复1.0
         inhibit = task_bias[4]  # L10抑制系数（0-1），主动压低本能驱力
-        smell_weight = 1.0 * (1.0 - 0.0 * inhibit)  # 抑制最多压一半
-        habit_weight = 1.0 * (1.0 - 0.0 * inhibit)
+        smell_weight = 1.0 * (1.0 - 1.0 * inhibit)  # 抑制满功率，直接压本能
+        habit_weight = 1.0 * (1.0 - 1.0 * inhibit)
         ctx_bias = ctx.get_gain(ctx_gain)  # L8上下文调制增益
-        total = smell * smell_weight + habit * habit_weight + spatial * 0.5 + imagined * 0.8 + language_bias + pfc_bias + ctx_bias
+        total = smell * smell_weight + habit * habit_weight + spatial * 0.5 + imagined * 0.8 + language_bias + pfc_bias * 0.5 + ctx_bias  # pfc动作偏置调小
         noise = np.random.randn(4) * 0.2
         action = int(np.argmax(total + noise))
 
