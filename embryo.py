@@ -446,7 +446,7 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
         smell = world.smell_gradient()
         vision = world.see()
 
-        if step % 200 == 0:
+        if step % 200 == 0:  # 回到200步一个指令
             # 给随机指令，然后在指令方向上放个临时食物（听指令就有奖励）
             cmd = np.random.randint(4)
             lang.set_command(cmd)
@@ -458,7 +458,7 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
             if 0 <= food_r < world.size and 0 <= food_c < world.size:
                 if world.grid[food_r, food_c] == world.EMPTY:
                     world.grid[food_r, food_c] = world.FOOD
-                    world.temp_foods.append((food_r, food_c, 10))  # 寿命10步
+                    world.temp_foods.append((food_r, food_c, 20))  # 寿命20步，虫子有更多时间走过去
             command_total += 1
             just_got_command = True
 
@@ -510,7 +510,6 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
                     'energy': world.energy,
                     'hip_strength': hip_strength,
                 })
-        just_got_command = False
 
         ate, bumped = world.step(action)
         mb.update_trace(active_kc, action)
@@ -527,6 +526,14 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
             dopamine = -0.3
         else:
             dopamine = 0.0
+
+        # 临时：听指令走对了就给多巴胺，不管有没有吃到食物
+        if just_got_command:
+            if action == lang.command:
+                dopamine += 0.5  # 听指令奖励
+            else:
+                dopamine -= 0.3  # 不听指令惩罚
+        just_got_command = False
 
         mb.learn(dopamine, active_kc, action)
         mb.step_decay()  # L7: 只对长期不激活的突触衰减
