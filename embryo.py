@@ -314,27 +314,36 @@ class LanguageChannel:
 
 
 class ContextModulator:
-    """L8: 上下文调制——临时调节KC神经元的兴奋性（不改权重）"""
-    def __init__(self, n_kc=500):
-        self.gain = np.ones(n_kc, dtype=np.float32)  # 临时增益，1.0=正常
-        self.target_gain = np.ones(n_kc, dtype=np.float32)
+    """L8: 上下文调制——可学习小网络，学习动态增益（婴儿状态起步）"""
+    def __init__(self, n_input=4, n_output=4, lr=0.06, seed=None):
+        if seed is not None:
+            np.random.seed(seed)
+        self.n_input = n_input
+        self.n_output = n_output
+        self.lr = lr
+        # 初始权重很小——婴儿状态，几乎没作用
+        self.W = np.random.randn(n_output, n_input).astype(np.float32) * 0.01
+        self.trace = np.zeros((n_output, n_input), dtype=np.float32)
+        self.trace_decay = 0.9
 
-    def set_context(self, context_vec, n_kc):
-        """根据上下文（语言指令等）设置目标增益"""
-        # 简单：指令方向对应的KC集群增益拉高
-        for i in range(n_kc):
-            if context_vec.max() > 0:
-                # 随机分配一部分KC到对应方向
-                if i % 4 == np.argmax(context_vec):
-                    self.target_gain[i] = 1.5  # 相关KC增益拉高
-                else:
-                    self.target_gain[i] = 0.7   # 无关KC增益压低
-            else:
-                self.target_gain[i] = 1.0
+    def forward(self, pfc_output):
+        """前向：L10输出(4维) → 动作增益(4维)"""
+        out = self.W @ pfc_output
+        # 更新trace
+        self.trace *= self.trace_decay
+        self.trace[:, :] += pfc_output[None, :]
+        return out
 
-    def step(self):
-        """每步缓慢过渡（模拟上下文切换的空白期）"""
-        self.gain += (self.target_gain - self.gain) * 0.1
+    def learn(self, dopamine):
+        """Hebbian + 多巴胺调制"""
+        if dopamine == 0:
+            return
+        self.W += self.lr * dopamine * self.trace
+        np.clip(self.W, -0.5, 0.5, out=self.W)
+
+    def get_gain(self, gain):
+        """输出动作增益给决策层"""
+        return gain * 1.5  # 初始增益小，学习后慢慢变大
 
     def apply(self, active_kc):
         """应用增益到激活的KC"""
@@ -385,7 +394,7 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
     fm = ForwardModel(n_kc=500, n_actions=4, lr=0.1, seed=seed)
     lang = LanguageChannel()
     pfc = PrefrontalCortex(n_input=6, n_output=4, lr=0.08, seed=seed)  # L10 前额叶（可学习，中等速率）
-    # ctx = ContextModulator(n_kc=500)   # L8 上下文调制——暂时不用，L10直接输出到决策层
+    ctx = ContextModulator(n_input=4, n_output=4, lr=0.06, seed=seed)    # L8 上下文调制（可学习，婴儿状态）
 
     # 从checkpoint继续训练（调参用）
     if resume_mb:
@@ -427,6 +436,9 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
         hip_strength = hip.memory[world.pos[0], world.pos[1]] if 0 <= world.pos[0] < 15 and 0 <= world.pos[1] < 15 else 0
         task_bias = pfc.forward(lang_input, world.energy, hip_strength)
 
+        # L8 上下文调制：输入L10输出，输出动作增益（婴儿状态，初始几乎没作用）
+        ctx_gain = ctx.forward(task_bias)
+
         active_kc = mb.encode(sensory)
         spatial = hip.spatial_bias(world.pos)
         imagined = fm.imagine(active_kc)
@@ -434,7 +446,8 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
         habit = mb.decide(active_kc)
         language_bias = lang_input * 2.0
         pfc_bias = pfc.get_bias(task_bias) * 2.0  # L10输出权重调大，对决策影响更大
-        total = smell * 1.0 + habit * 1.0 + spatial * 0.5 + imagined * 0.8 + language_bias + pfc_bias
+        ctx_bias = ctx.get_gain(ctx_gain)  # L8上下文调制增益
+        total = smell * 1.0 + habit * 1.0 + spatial * 0.5 + imagined * 0.8 + language_bias + pfc_bias + ctx_bias
         noise = np.random.randn(4) * 0.2
         action = int(np.argmax(total + noise))
 
@@ -461,6 +474,7 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
         mb.learn(dopamine, active_kc, action)
         mb.step_decay()  # L7: 只对长期不激活的突触衰减
         pfc.learn(dopamine)  # L10: 前额叶也用Hebbian学习
+        ctx.learn(dopamine)  # L8: 上下文调制也用Hebbian学习
 
         # L9: 存成功经历（全脑回放用）
         if dopamine > 0.5 and len(success_memories) < 1000:
