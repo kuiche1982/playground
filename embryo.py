@@ -23,7 +23,7 @@ class World:
     EMPTY, WALL, FOOD, CUE = 0, 1, 2, 3
     ACTIONS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
 
-    def __init__(self, size=15, n_food=6, n_walls=3, n_cues=6, seed=None):
+    def __init__(self, size=15, n_food=0, n_walls=3, n_cues=6, seed=None):  # 不放自由食物，只有听指令才给
         if seed is not None:
             np.random.seed(seed)
         self.size = size
@@ -33,6 +33,7 @@ class World:
         self.pos = np.array([size // 2, size // 2], dtype=int)
         self.energy = 1.0
         self.steps = 0
+        self.temp_foods = []  # 临时食物（指令给的），有寿命
 
     def _place_walls(self, n):
         placed = 0
@@ -375,6 +376,9 @@ class PrefrontalCortex:
         self.lr = lr
         # 初始权重很小——婴儿前额叶没发育，几乎没作用
         self.W = np.random.randn(n_output, n_input).astype(np.float32) * 0.01
+        # 抑制维度初始权重调大一点，让它更容易学
+        if n_output >= 5:
+            self.W[4, :] = np.random.randn(n_input).astype(np.float32) * 0.1
         self.trace = np.zeros((n_output, n_input), dtype=np.float32)
         self.trace_decay = 0.95  # 拉长trace，解决指令在前、奖励在后的信用分配
 
@@ -443,7 +447,7 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
         vision = world.see()
 
         if step % 200 == 0:
-            # 给随机指令，然后在指令方向上放个食物（听指令就有奖励）
+            # 给随机指令，然后在指令方向上放个临时食物（听指令就有奖励）
             cmd = np.random.randint(4)
             lang.set_command(cmd)
             # 在指令方向上放食物（近的远的都有）
@@ -454,8 +458,19 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
             if 0 <= food_r < world.size and 0 <= food_c < world.size:
                 if world.grid[food_r, food_c] == world.EMPTY:
                     world.grid[food_r, food_c] = world.FOOD
+                    world.temp_foods.append((food_r, food_c, 10))  # 寿命10步
             command_total += 1
             just_got_command = True
+
+        # 更新临时食物寿命，寿命到了就消失
+        new_temp_foods = []
+        for fr, fc, life in world.temp_foods:
+            life -= 1
+            if life > 0 and world.grid[fr, fc] == world.FOOD:
+                new_temp_foods.append((fr, fc, life))
+            elif world.grid[fr, fc] == world.FOOD:
+                world.grid[fr, fc] = world.EMPTY  # 寿命到了，消失
+        world.temp_foods = new_temp_foods
 
         lang_input = lang.get_input()  # 先set_command，再get_input
 
@@ -476,8 +491,8 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
         language_bias = lang_input * (3.0 + 4.0 * world.energy)  # 调大基线：饿了也有点听指令
         pfc_bias = pfc.get_bias(task_bias) * 2.0  # L10输出权重调大，对决策影响更大
         inhibit = task_bias[4]  # L10抑制系数（0-1），主动压低本能驱力
-        smell_weight = 1.0 * (1.0 - 0.5 * inhibit)  # 抑制最多压一半
-        habit_weight = 1.0 * (1.0 - 0.5 * inhibit)
+        smell_weight = 1.0 * (1.0 - 0.0 * inhibit)  # 抑制最多压一半
+        habit_weight = 1.0 * (1.0 - 0.0 * inhibit)
         ctx_bias = ctx.get_gain(ctx_gain)  # L8上下文调制增益
         total = smell * smell_weight + habit * habit_weight + spatial * 0.5 + imagined * 0.8 + language_bias + pfc_bias + ctx_bias
         noise = np.random.randn(4) * 0.2
@@ -528,20 +543,20 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
                 'hip_strength': hip_strength,
             })
 
-        # L9: 全脑回放——每2000步重放，正样本:负样本 = 3:1
-        if step % 2000 == 0 and step > 0:
+        # L9: 回放增强——每1000步重放，正样本:负样本 = 3:1
+        if step % 1000 == 0 and step > 0:
             # 正样本回放（75%）
-            for _ in range(8):
+            for _ in range(16):
                 if len(success_memories) > 0:
                     mem = success_memories[np.random.randint(len(success_memories))]
-                    pfc.learn(0.3)  # 正多巴胺，强化正确决策
-                    ctx.learn(0.3)
+                    pfc.learn(0.5)  # 正多巴胺增强
+                    ctx.learn(0.5)
             # 负样本回放（25%）
-            for _ in range(3):
+            for _ in range(6):
                 if len(failure_memories) > 0:
                     mem = failure_memories[np.random.randint(len(failure_memories))]
-                    pfc.learn(-0.25)  # 负多巴胺，抑制错误决策
-                    ctx.learn(-0.25)
+                    pfc.learn(-0.4)  # 负多巴胺增强
+                    ctx.learn(-0.4)
 
         # 饿死重置
         if world.energy <= 0:
@@ -595,4 +610,4 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
 
 
 if __name__ == "__main__":
-    run(n_steps=20000, seed=42)
+    run(n_steps=50000, seed=42)
