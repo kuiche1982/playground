@@ -1,21 +1,27 @@
 """
-Embryo v4.0: L0-L6 完整系统
-  L0 身体+世界：2D grid、4方向动作、能量条
-  L1 先天趋性：朝气味浓度高的方向走（硬编码，不学）
-  L2 感觉编码：KC稀疏编码（视觉+语言输入）
-  L3 习惯层：蘑菇体Hebbian学习
-  L4 空间记忆：海马体，记住食物位置
-  L5 内部模拟：前向模型，想象动作结果
-  L6 语言通道：词与动作锚定，听懂指令
+Embryo v4.0: L0-L6 完整系统 + 训练过程保存
+  L0 身体+世界
+  L1 先天趋性（气味）
+  L2 感觉编码（KC）
+  L3 习惯层（蘑菇体）
+  L4 空间记忆（海马体）
+  L5 内部模拟（前向模型）
+  L6 语言通道
 
-决策 = 气味 + 视觉习惯 + 空间记忆 + 想象 + 语言指令
+训练过程：
+  - 每1000步保存一次权重checkpoint
+  - 每步记录训练日志（CSV）
+  - 能从checkpoint加载继续训练
 """
 import numpy as np
+import os
+import csv
+import time
 
 
 class World:
     EMPTY, WALL, FOOD, CUE = 0, 1, 2, 3
-    ACTIONS = [(-1, 0), (1, 0), (0, -1), (0, 1)]  # 上、下、左、右
+    ACTIONS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
 
     def __init__(self, size=15, n_food=6, n_walls=3, n_cues=6, seed=None):
         if seed is not None:
@@ -130,7 +136,6 @@ class World:
 
 
 class MushroomBody:
-    """L2+L3: 蘑菇体（视觉+语言学习）"""
     def __init__(self, n_input=20, n_kc=500, n_actions=4,
                  lr=0.15, trace_decay=0.85, seed=None):
         if seed is not None:
@@ -161,9 +166,16 @@ class MushroomBody:
         self.W_out += self.lr * dopamine * self.trace
         np.clip(self.W_out, -2.0, 2.0, out=self.W_out)
 
+    def save(self, path):
+        np.savez(path, W_in=self.W_in, W_out=self.W_out)
+
+    def load(self, path):
+        data = np.load(path)
+        self.W_in = data['W_in']
+        self.W_out = data['W_out']
+
 
 class Hippocampus:
-    """L4: 海马体（空间记忆）"""
     def __init__(self, world_size=15, decay=0.9995):
         self.size = world_size
         self.memory = np.zeros((world_size, world_size), dtype=np.float32)
@@ -186,9 +198,14 @@ class Hippocampus:
                     bias[i] += self.memory[nr, nc] * (1.0 / dist)
         return bias
 
+    def save(self, path):
+        np.save(path, self.memory)
+
+    def load(self, path):
+        self.memory = np.load(path)
+
 
 class ForwardModel:
-    """L5: 前向模型（内部模拟）"""
     def __init__(self, n_kc=500, n_actions=4, lr=0.1, seed=None):
         if seed is not None:
             np.random.seed(seed)
@@ -211,30 +228,32 @@ class ForwardModel:
     def imagine(self, active_kc):
         return self.W_pred[:, active_kc].sum(axis=1)
 
+    def save(self, path):
+        np.save(path, self.W_pred)
+
+    def load(self, path):
+        self.W_pred = np.load(path)
+
 
 class LanguageChannel:
-    """L6: 语言通道
-    4个词：上、下、左、右
-    听到指令 → 对应的语言维度激活 → 和动作锚定"""
-
     WORDS = ["上", "下", "左", "右"]
 
     def __init__(self):
-        self.command = None  # 当前指令（0-3对应4个方向）
+        self.command = None
 
     def set_command(self, word_idx):
-        """设置当前指令：0=上, 1=下, 2=左, 3=右"""
         self.command = word_idx
 
     def get_input(self):
-        """返回4维语言向量：听到指令就对应维度=1"""
         vec = np.zeros(4, dtype=np.float32)
         if self.command is not None:
             vec[self.command] = 1.0
         return vec
 
 
-def run(n_steps=20000, seed=42, verbose=True):
+def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.csv"):
+    os.makedirs(ckpt_dir, exist_ok=True)
+
     world = World(size=15, n_food=6, n_walls=3, n_cues=6, seed=seed)
     mb = MushroomBody(n_input=20, n_kc=500, n_actions=4, lr=0.15, trace_decay=0.85, seed=seed)
     hip = Hippocampus(world_size=15, decay=0.9995)
@@ -244,36 +263,36 @@ def run(n_steps=20000, seed=42, verbose=True):
     foods_eaten = 0
     eat_times = []
     last_food_step = 0
-    command_followed = 0  # 指令发布后第一步就对了的次数
+    command_followed = 0
     command_total = 0
-    just_got_command = False  # 刚发布新指令的标记
+    just_got_command = False
+    death_count = 0
+
+    # 训练日志
+    log_rows = []
+    start_time = time.time()
 
     for step in range(n_steps):
         smell = world.smell_gradient()
         vision = world.see()
         lang_input = lang.get_input()
 
-        # 每200步随机给一次指令（训练语言理解）
         if step % 200 == 0:
             lang.set_command(np.random.randint(4))
             command_total += 1
             just_got_command = True
 
-        # 感觉输入 = 视觉(16维) + 语言(4维) = 20维
         sensory = np.concatenate([vision, lang_input])
         active_kc = mb.encode(sensory)
-
         spatial = hip.spatial_bias(world.pos)
         imagined = fm.imagine(active_kc)
 
-        # 决策 = 气味 + 视觉习惯 + 空间记忆 + 想象 + 语言指令
         habit = mb.decide(active_kc)
-        language_bias = lang_input * 2.0  # 指令权重高
+        language_bias = lang_input * 2.0
         total = smell * 1.0 + habit * 1.0 + spatial * 0.5 + imagined * 0.8 + language_bias
         noise = np.random.randn(4) * 0.2
         action = int(np.argmax(total + noise))
 
-        # 检查有没有听懂指令（只在刚发布指令的那一步算）
         if just_got_command and action == lang.command:
             command_followed += 1
         just_got_command = False
@@ -296,30 +315,55 @@ def run(n_steps=20000, seed=42, verbose=True):
 
         mb.learn(dopamine)
 
+        # 饿死重置
         if world.energy <= 0:
-            if verbose:
-                recent = eat_times[-5:] if len(eat_times) >= 5 else eat_times
-                avg = np.mean(recent) if recent else float('inf')
-                print(f"[{step:5d}] 饿死！吃了{foods_eaten}个，平均:{avg:.1f}步")
+            death_count += 1
             world = World(size=15, n_food=6, n_walls=3, n_cues=6, seed=seed + step)
             last_food_step = step
 
-        if verbose and step % 2000 == 0:
+        # 记录训练日志（每100步记一次）
+        if step % 100 == 0:
             recent = eat_times[-10:] if len(eat_times) >= 10 else eat_times
-            avg = np.mean(recent) if recent else float('inf')
-            print(f"[{step:5d}] 食物:{foods_eaten:4d}  "
-                  f"平均找食:{avg:.1f}步  能量:{world.energy:.2f}")
+            avg_eat = np.mean(recent) if recent else -1
+            log_rows.append({
+                'step': step,
+                'foods_eaten': foods_eaten,
+                'avg_eat_steps': round(avg_eat, 2),
+                'deaths': death_count,
+                'command_follow_rate': round(command_followed / max(1, command_total), 3),
+                'energy': round(world.energy, 3),
+            })
 
-    print("\n===== 最终结果 =====")
+        # 保存checkpoint（每2000步）
+        if step % 2000 == 0 and step > 0:
+            mb.save(f"{ckpt_dir}/mb_step{step}.npz")
+            hip.save(f"{ckpt_dir}/hip_step{step}.npy")
+            fm.save(f"{ckpt_dir}/fm_step{step}.npy")
+
+    # 保存最终模型
+    mb.save(f"{ckpt_dir}/mb_final.npz")
+    hip.save(f"{ckpt_dir}/hip_final.npy")
+    fm.save(f"{ckpt_dir}/fm_final.npy")
+
+    # 写CSV日志
+    with open(log_file, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=log_rows[0].keys())
+        writer.writeheader()
+        writer.writerows(log_rows)
+
+    elapsed = time.time() - start_time
+    print(f"\n===== 训练完成 =====")
     print(f"总步数: {n_steps}")
+    print(f"耗时: {elapsed:.1f}秒")
     print(f"吃食物总数: {foods_eaten}")
-    print(f"听懂指令: {command_followed}/{command_total} 次 ({command_followed/max(1,command_total)*100:.1f}%)")
+    print(f"饿死次数: {death_count}")
+    print(f"听懂指令: {command_followed}/{command_total} ({command_followed/max(1,command_total)*100:.1f}%)")
     if len(eat_times) >= 30:
         first_10 = np.mean(eat_times[:10])
         last_10 = np.mean(eat_times[-10:])
-        print(f"前10次平均找食: {first_10:.1f} 步")
-        print(f"后10次平均找食: {last_10:.1f} 步")
-        print(f"提升: {(1 - last_10/first_10)*100:.1f}%")
+        print(f"前10次找食: {first_10:.1f}步 → 后10次: {last_10:.1f}步 (提升{(1-last_10/first_10)*100:.1f}%)")
+    print(f"checkpoint保存在: {ckpt_dir}/")
+    print(f"训练日志保存在: {log_file}")
 
 
 if __name__ == "__main__":
