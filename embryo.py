@@ -525,10 +525,10 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
         # 刚收到指令那一步：立即给多巴胺（预判）
         if just_got_command:
             if action == lang.command:
-                dopamine += 2.0  # 第一步走对，给奖励
+                dopamine += 3.0  # 奖励加大
                 command_followed += 1  # 单步判定统计
             else:
-                dopamine -= 1.0  # 第一步走错，给惩罚
+                dopamine -= 1.5  # 惩罚加大
 
         # 20步窗口结束：只用于训练，不统计
         if cmd_window > 0:
@@ -617,4 +617,4 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
 
 
 if __name__ == "__main__":
-    run(n_steps=50000, seed=42)
+    run(n_steps=100000, seed=42)
