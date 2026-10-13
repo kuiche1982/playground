@@ -158,8 +158,10 @@ class MushroomBody:
         # L9: 回放（存成功经历）
         self.success_memories = []  # (active_kc, action) 成功的经历
 
-    def encode(self, sensory):
+    def encode(self, sensory, kc_gain=None):
         kc_acts = self.W_in @ sensory
+        if kc_gain is not None:
+            kc_acts = kc_acts * kc_gain  # L8: 上下文增益调制
         return np.argpartition(kc_acts, -self.n_active)[-self.n_active:]
 
     def decide(self, active_kc):
@@ -368,6 +370,8 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
     hip = Hippocampus(world_size=15, decay=0.9995)
     fm = ForwardModel(n_kc=500, n_actions=4, lr=0.1, seed=seed)
     lang = LanguageChannel()
+    pfc = PrefrontalCortex(n_kc=500)  # L10 前额叶
+    ctx = ContextModulator(n_kc=500)   # L8 上下文调制
 
     # 从checkpoint继续训练（调参用）
     if resume_mb:
@@ -403,7 +407,17 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
             just_got_command = True
 
         sensory = np.concatenate([vision, lang_input])
-        active_kc = mb.encode(sensory)
+
+        # L10 前额叶：判断当前任务模式
+        hip_strength = hip.memory[world.pos[0], world.pos[1]] if 0 <= world.pos[0] < 15 and 0 <= world.pos[1] < 15 else 0
+        pfc.update(lang_cmd=lang_input, hip_memory_strength=hip_strength, energy=world.energy)
+
+        # L8 上下文调制：根据任务模式调KC增益
+        ctx_vec = pfc.get_context_vec()
+        ctx.set_context(lang_input, mb.n_kc)
+        ctx.step()
+
+        active_kc = mb.encode(sensory, kc_gain=ctx.gain)
         spatial = hip.spatial_bias(world.pos)
         imagined = fm.imagine(active_kc)
 
