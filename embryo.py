@@ -79,6 +79,21 @@ class World:
                 self.grid[nr, nc] = self.FOOD
                 return
 
+    def _get_nearest_food_dir(self):
+        """找到最近的食物，返回它在哪个方向（0=上,1=下,2=左,3=右）"""
+        food_positions = np.argwhere(self.grid == self.FOOD)
+        if len(food_positions) == 0:
+            return np.random.randint(4)  # 没食物就随机
+        # 算所有食物到当前位置的距离
+        dists = np.abs(food_positions - self.pos).sum(axis=1)
+        nearest = food_positions[np.argmin(dists)]
+        dy, dx = nearest - self.pos
+        # 选主导方向
+        if abs(dy) > abs(dx):
+            return 0 if dy < 0 else 1  # 上/下
+        else:
+            return 2 if dx < 0 else 3  # 左/右
+
     def smell_gradient(self):
         smell = np.zeros(4, dtype=np.float32)
         foods = np.argwhere(self.grid == self.FOOD)
@@ -427,7 +442,17 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
         lang_input = lang.get_input()
 
         if step % 200 == 0:
-            lang.set_command(np.random.randint(4))
+            # 给随机指令，然后在指令方向上放个食物（听指令就有奖励）
+            cmd = np.random.randint(4)
+            lang.set_command(cmd)
+            # 在指令方向上放食物（近的远的都有）
+            dr, dc = world.ACTIONS[cmd]
+            dist = np.random.randint(2, 6)  # 2-5步远
+            food_r = world.pos[0] + dr * dist
+            food_c = world.pos[1] + dc * dist
+            if 0 <= food_r < world.size and 0 <= food_c < world.size:
+                if world.grid[food_r, food_c] == world.EMPTY:
+                    world.grid[food_r, food_c] = world.FOOD
             command_total += 1
             just_got_command = True
 
