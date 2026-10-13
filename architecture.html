@@ -168,5 +168,138 @@
   <div class="legend-item"><div class="dot" style="background:#e94560"></div>决策输出</div>
   <div class="legend-item"><div class="dot" style="background:#3fb950"></div>多巴胺</div>
 </div>
+
+<!-- 分割线 -->
+<hr style="border-color: #30363d; margin: 60px 0;">
+<h1 style="color: #bc8cff;">真实人脑架构（对比）</h1>
+<p style="text-align: center; color: #8b949e; margin-bottom: 30px;">生物大脑的真实分层结构</p>
+
+<div class="container">
+<svg viewBox="0 0 1000 950" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8b949e"/>
+    </marker>
+    <marker id="arrow2-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#bc8cff"/>
+    </marker>
+  </defs>
+
+  <!-- 感官输入 -->
+  <rect x="50" y="30" width="140" height="40" rx="6" fill="#0f3460" stroke="#58a6ff"/>
+  <text x="120" y="55" text-anchor="middle" fill="#fff" font-size="12">视觉（视网膜）</text>
+
+  <rect x="220" y="30" width="140" height="40" rx="6" fill="#0f3460" stroke="#58a6ff"/>
+  <text x="290" y="55" text-anchor="middle" fill="#fff" font-size="12">听觉（耳蜗）</text>
+
+  <rect x="390" y="30" width="140" height="40" rx="6" fill="#0f3460" stroke="#58a6ff"/>
+  <text x="460" y="55" text-anchor="middle" fill="#fff" font-size="12">嗅觉（嗅球）</text>
+
+  <rect x="560" y="30" width="140" height="40" rx="6" fill="#0f3460" stroke="#58a6ff"/>
+  <text x="630" y="55" text-anchor="middle" fill="#fff" font-size="12">触觉（体感）</text>
+
+  <rect x="730" y="30" width="140" height="40" rx="6" fill="#0f3460" stroke="#58a6ff"/>
+  <text x="800" y="55" text-anchor="middle" fill="#fff" font-size="12">味觉（味蕾）</text>
+
+  <!-- 感觉皮层 -->
+  <rect x="50" y="110" width="140" height="50" rx="6" fill="#16213e" stroke="#f85149"/>
+  <text x="120" y="132" text-anchor="middle" fill="#fff" font-size="12" font-weight="bold">V1 → V2 → V4</text>
+  <text x="120" y="150" text-anchor="middle" fill="#8b949e" font-size="10">视觉皮层（6层）</text>
+
+  <rect x="220" y="110" width="140" height="50" rx="6" fill="#16213e" stroke="#f85149"/>
+  <text x="290" y="132" text-anchor="middle" fill="#fff" font-size="12" font-weight="bold">A1 → A2</text>
+  <text x="290" y="150" text-anchor="middle" fill="#8b949e" font-size="10">听觉皮层</text>
+
+  <rect x="390" y="110" width="140" height="50" rx="6" fill="#533483" stroke="#bc8cff"/>
+  <text x="460" y="132" text-anchor="middle" fill="#fff" font-size="12" font-weight="bold">嗅皮层</text>
+  <text x="460" y="150" text-anchor="middle" fill="#d2a8ff" font-size="10">边缘系统</text>
+
+  <rect x="560" y="110" width="140" height="50" rx="6" fill="#16213e" stroke="#f85149"/>
+  <text x="630" y="132" text-anchor="middle" fill="#fff" font-size="12" font-weight="bold">S1 → S2</text>
+  <text x="630" y="150" text-anchor="middle" fill="#8b949e" font-size="10">体感皮层</text>
+
+  <!-- 感官→皮层 箭头 -->
+  <line x1="120" y1="70" x2="120" y2="110" stroke="#8b949e" stroke-width="1" marker-end="url(#arrow2)"/>
+  <line x1="290" y1="70" x2="290" y2="110" stroke="#8b949e" stroke-width="1" marker-end="url(#arrow2)"/>
+  <line x1="460" y1="70" x2="460" y2="110" stroke="#8b949e" stroke-width="1" marker-end="url(#arrow2)"/>
+  <line x1="630" y1="70" x2="630" y2="110" stroke="#8b949e" stroke-width="1" marker-end="url(#arrow2)"/>
+
+  <!-- 联合皮层 -->
+  <rect x="150" y="210" width="300" height="50" rx="6" fill="#16213e" stroke="#f85149"/>
+  <text x="300" y="232" text-anchor="middle" fill="#fff" font-size="13" font-weight="bold">颞叶（物体识别/语言理解）</text>
+  <text x="300" y="250" text-anchor="middle" fill="#8b949e" font-size="10">IT皮层、韦尼克区、布洛卡区</text>
+
+  <rect x="500" y="210" width="300" height="50" rx="6" fill="#16213e" stroke="#f85149"/>
+  <text x="650" y="232" text-anchor="middle" fill="#fff" font-size="13" font-weight="bold">顶叶（空间/逻辑/数学）</text>
+  <text x="650" y="250" text-anchor="middle" fill="#8b949e" font-size="10">顶内沟、体感联合区</text>
+
+  <!-- 皮层→联合皮层 箭头 -->
+  <line x1="120" y1="160" x2="250" y2="210" stroke="#8b949e" stroke-width="1" marker-end="url(#arrow2)"/>
+  <line x1="290" y1="160" x2="320" y2="210" stroke="#8b949e" stroke-width="1" marker-end="url(#arrow2)"/>
+  <line x1="630" y1="160" x2="680" y2="210" stroke="#8b949e" stroke-width="1" marker-end="url(#arrow2)"/>
+
+  <!-- 边缘系统 -->
+  <rect x="100" y="320" width="180" height="55" rx="6" fill="#533483" stroke="#bc8cff"/>
+  <text x="190" y="342" text-anchor="middle" fill="#fff" font-size="12" font-weight="bold">杏仁核</text>
+  <text x="190" y="360" text-anchor="middle" fill="#d2a8ff" font-size="10">情绪（恐惧/奖励）</text>
+
+  <rect x="320" y="320" width="180" height="55" rx="6" fill="#533483" stroke="#bc8cff"/>
+  <text x="410" y="342" text-anchor="middle" fill="#fff" font-size="12" font-weight="bold">海马体</text>
+  <text x="410" y="360" text-anchor="middle" fill="#d2a8ff" font-size="10">记忆索引/空间导航</text>
+
+  <rect x="540" y="320" width="180" height="55" rx="6" fill="#533483" stroke="#bc8cff"/>
+  <text x="630" y="342" text-anchor="middle" fill="#fff" font-size="12" font-weight="bold">伏隔核</text>
+  <text x="630" y="360" text-anchor="middle" fill="#d2a8ff" font-size="10">奖励中枢</text>
+
+  <!-- 多巴胺系统 -->
+  <rect x="760" y="320" width="180" height="55" rx="6" fill="#3fb950" stroke="#56d364"/>
+  <text x="850" y="342" text-anchor="middle" fill="#fff" font-size="12" font-weight="bold">VTA（腹侧被盖区）</text>
+  <text x="850" y="360" text-anchor="middle" fill="#fff" font-size="10">多巴胺能神经元</text>
+
+  <!-- 前额叶 -->
+  <rect x="200" y="440" width="600" height="70" rx="10" fill="#f0a500" stroke="#d29922" stroke-width="2"/>
+  <text x="500" y="468" text-anchor="middle" fill="#1a1a2e" font-size="16" font-weight="bold">前额叶皮层（PFC）</text>
+  <text x="500" y="490" text-anchor="middle" fill="#1a1a2e" font-size="11">决策/规划/任务切换/抑制控制/工作记忆</text>
+
+  <!-- 边缘系统→前额叶 箭头 -->
+  <line x1="190" y1="375" x2="300" y2="440" stroke="#bc8cff" stroke-width="1.5" marker-end="url(#arrow2-purple)"/>
+  <line x1="410" y1="375" x2="450" y2="440" stroke="#bc8cff" stroke-width="1.5" marker-end="url(#arrow2-purple)"/>
+  <line x1="630" y1="375" x2="600" y2="440" stroke="#bc8cff" stroke-width="1.5" marker-end="url(#arrow2-purple)"/>
+
+  <!-- 多巴胺→全脑 箭头 -->
+  <path d="M 760 347 Q 500 347 500 440" stroke="#3fb950" stroke-width="2" fill="none" stroke-dasharray="5"/>
+  <text x="650" y="395" fill="#3fb950" font-size="11">多巴胺全局广播</text>
+
+  <!-- 自上而下反馈箭头（前额叶→感觉皮层） -->
+  <path d="M 300 440 Q 100 300 120 160" stroke="#d29922" stroke-width="1.5" fill="none" stroke-dasharray="4"/>
+  <text x="80" y="280" fill="#d29922" font-size="11">自上而下</text>
+  <text x="80" y="295" fill="#d29922" font-size="11">反馈</text>
+
+  <!-- 运动皮层 -->
+  <rect x="350" y="570" width="300" height="55" rx="8" fill="#e94560" stroke="#ff7b72" stroke-width="2"/>
+  <text x="500" y="592" text-anchor="middle" fill="#fff" font-size="14" font-weight="bold">运动皮层（M1）</text>
+  <text x="500" y="610" text-anchor="middle" fill="#ffd6d6" font-size="11">动作输出</text>
+
+  <!-- 前额叶→运动皮层 箭头 -->
+  <line x1="500" y1="510" x2="500" y2="570" stroke="#8b949e" stroke-width="2" marker-end="url(#arrow2)"/>
+
+  <!-- 脑干/脊髓 -->
+  <rect x="350" y="670" width="300" height="50" rx="6" fill="#2d4059" stroke="#58a6ff"/>
+  <text x="500" y="692" text-anchor="middle" fill="#fff" font-size="12" font-weight="bold">脑干 + 脊髓</text>
+  <text x="500" y="710" text-anchor="middle" fill="#8b949e" font-size="10">反射弧/自主神经</text>
+
+  <line x1="500" y1="625" x2="500" y2="670" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arrow2)"/>
+
+  <!-- 对比说明 -->
+  <rect x="50" y="770" width="900" height="160" rx="8" fill="#161b22" stroke="#30363d"/>
+  <text x="70" y="795" fill="#bc8cff" font-size="14" font-weight="bold">Embryo vs 真实人脑 对比：</text>
+  <text x="70" y="820" fill="#8b949e" font-size="12">✅ 相似：模块化分层、专门通路、Hebbian学习、多巴胺调制、海马体记忆、前额叶决策</text>
+  <text x="70" y="840" fill="#f85149" font-size="12">❌ Embryo简化：只有视觉+嗅觉+语言，没有听觉/触觉/味觉；没有杏仁核（情绪）；没有运动皮层（直接输出动作）</text>
+  <text x="70" y="860" fill="#f0a500" font-size="12">❌ Embryo简化：没有自上而下反馈（预测编码）；没有睡眠回放的完整机制；没有工作记忆</text>
+  <text x="70" y="880" fill="#3fb950" font-size="12">💡 但核心思路一致：不是堆深层网络，是模块化浅层 + 专门通路 + 全局调制</text>
+  <text x="70" y="905" fill="#8b949e" font-size="11">Embryo = 果蝇级原型，验证核心机制；人脑 = 几亿年进化的完整版</text>
+</svg>
+</div>
+
 </body>
 </html>
