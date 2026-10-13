@@ -283,16 +283,33 @@ class ForwardModel:
 class LanguageChannel:
     WORDS = ["上", "下", "左", "右"]
 
-    def __init__(self):
+    def __init__(self, n_words=4, eta=0.04, seed=None):
+        if seed is not None:
+            np.random.seed(seed)
         self.command = None
+        self.n_words = n_words
+        self.eta = eta
+        # L6: 词共现Hebbian矩阵（4×4）
+        self.W_cooc = np.eye(n_words, dtype=np.float32) * 0.5  # 初始对角线偏强
 
     def set_command(self, word_idx):
         self.command = word_idx
+        # L6: 词共现Hebbian更新（纯感知统计，无多巴胺）
+        if word_idx is not None:
+            vec = np.zeros(self.n_words, dtype=np.float32)
+            vec[word_idx] = 1.0
+            # Hebbian：同时激活的词互相增强
+            self.W_cooc += self.eta * np.outer(vec, vec)
+            # 行归一化，防止权重无限膨胀
+            row_norm = np.linalg.norm(self.W_cooc, axis=1, keepdims=True) + 1e-8
+            self.W_cooc = self.W_cooc / row_norm
 
     def get_input(self):
-        vec = np.zeros(4, dtype=np.float32)
+        vec = np.zeros(self.n_words, dtype=np.float32)
         if self.command is not None:
             vec[self.command] = 1.0
+            # L6: 用共现矩阵投影，得到语义向量
+            vec = self.W_cooc @ vec
         return vec
 
 
