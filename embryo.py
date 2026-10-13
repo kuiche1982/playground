@@ -149,6 +149,15 @@ class MushroomBody:
         self.W_out = np.random.randn(n_actions, n_kc).astype(np.float32) * 0.01
         self.trace = np.zeros((n_actions, n_kc), dtype=np.float32)
 
+        # L7: 记忆巩固
+        self.activation_count = np.zeros_like(self.W_out)
+        self.plasticity = np.ones_like(self.W_out)  # 1.0=可塑, 0.02=固化
+        self.consolidation_threshold = 15
+        self.base_decay = 0.99995  # 基础衰减（调弱，不要把学的东西都衰减掉）
+
+        # L9: 回放（存成功经历）
+        self.success_memories = []  # (active_kc, action) 成功的经历
+
     def encode(self, sensory):
         kc_acts = self.W_in @ sensory
         return np.argpartition(kc_acts, -self.n_active)[-self.n_active:]
@@ -160,19 +169,56 @@ class MushroomBody:
         self.trace *= self.trace_decay
         self.trace[chosen_action, active_kc] = 1.0
 
-    def learn(self, dopamine):
+    def learn(self, dopamine, active_kc=None, chosen_action=None):
         if dopamine == 0:
             return
+        # Hebbian更新
         self.W_out += self.lr * dopamine * self.trace
         np.clip(self.W_out, -2.0, 2.0, out=self.W_out)
 
+        # L7: 记忆巩固——统计激活次数，触发固化
+        if active_kc is not None and chosen_action is not None and dopamine > 0:
+            self.activation_count[chosen_action, active_kc] += 1
+            # 达到阈值，可塑性降低（固化）
+            mask = self.activation_count[chosen_action, active_kc] >= self.consolidation_threshold
+            if mask.any():
+                indices = np.where(mask)[0]
+                self.plasticity[chosen_action, active_kc[indices]] *= 0.6
+                self.plasticity[chosen_action, active_kc[indices]] = np.clip(
+                    self.plasticity[chosen_action, active_kc[indices]], 0.02, 1.0)
+
+        # L9: 存成功经历（用于回放）
+        if dopamine > 0.5 and active_kc is not None and chosen_action is not None:
+            if len(self.success_memories) < 1000:  # 最多存1000条
+                self.success_memories.append((active_kc.copy(), chosen_action))
+
+    def step_decay(self):
+        """每步的权重衰减（模拟遗忘）"""
+        self.W_out *= (self.base_decay ** self.plasticity)
+        # 激活计数缓慢回落（防止永久锁死）
+        self.activation_count *= 0.9995
+
+    def replay(self, n_times=10):
+        """L9: 回放——重放成功经历，强化浅层连接"""
+        if len(self.success_memories) == 0:
+            return
+        for _ in range(n_times):
+            idx = np.random.randint(len(self.success_memories))
+            active_kc, action = self.success_memories[idx]
+            # 回放时模拟多巴胺强化（弱强化，不要冲乱权重）
+            self.W_out[action, active_kc] += self.lr * 0.1
+            np.clip(self.W_out, -2.0, 2.0, out=self.W_out)
+
     def save(self, path):
-        np.savez(path, W_in=self.W_in, W_out=self.W_out)
+        np.savez(path, W_in=self.W_in, W_out=self.W_out,
+                 activation_count=self.activation_count, plasticity=self.plasticity)
 
     def load(self, path):
         data = np.load(path)
         self.W_in = data['W_in']
         self.W_out = data['W_out']
+        self.activation_count = data['activation_count']
+        self.plasticity = data['plasticity']
 
 
 class Hippocampus:
@@ -313,7 +359,12 @@ def run(n_steps=20000, seed=42, ckpt_dir="checkpoints", log_file="training_log.c
         else:
             dopamine = 0.0
 
-        mb.learn(dopamine)
+        mb.learn(dopamine, active_kc, action)
+        mb.step_decay()  # L7: 每步权重衰减（模拟遗忘）
+
+        # L9: 每1000步回放一次（模拟睡眠巩固）
+        if step % 1000 == 0 and step > 0:
+            mb.replay(n_times=30)
 
         # 饿死重置
         if world.energy <= 0:
