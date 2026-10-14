@@ -19,7 +19,11 @@ from embryo import World, MushroomBody, Hippocampus, ForwardModel, LanguageChann
 
 def smell_at(world, pos):
     smell = np.zeros(4, dtype=np.float32)
-    foods = np.argwhere(world.grid == world.FOOD)
+    # 可重叠食物：嗅觉看计数层（food_count>0 即存在）
+    if not hasattr(world, 'food_count'):
+        foods = np.argwhere(world.grid == world.FOOD)
+    else:
+        foods = np.argwhere(world.food_count > 0)
     if len(foods) == 0:
         return smell
     for i, (dr, dc) in enumerate(world.ACTIONS):
@@ -73,6 +77,7 @@ def respawn_food_patchy(world):
             r, c = np.random.randint(half, world.size - 1), np.random.randint(half, world.size - 1)
         if world.grid[r, c] == world.EMPTY:
             world.grid[r, c] = world.FOOD
+            world.food_count[r, c] += 1
             return
 
 
@@ -81,6 +86,7 @@ def respawn_food_uniform(world):
         r, c = np.random.randint(1, world.size - 1, 2)
         if world.grid[r, c] == world.EMPTY:
             world.grid[r, c] = world.FOOD
+            world.food_count[r, c] += 1
             return
 
 
@@ -116,40 +122,55 @@ class EnvHebbian:
 
 def place_stable(world, rng, corner='tl', n_cues=6, n_food=10):
     """在指定角落放 cue + 附近食物（稳定环境结构，产区搬家用）
-    稀疏 cue：间距 ≥4，避免食物工厂；角落范围随 world.size 缩放"""
+    稀疏 cue：间距 ≥4，避免食物工厂；角落范围随 world.size 缩放
+    食物可重叠堆叠（food_count 计数层+1），消除物理格子上限"""
     world.grid[world.grid == world.FOOD] = world.EMPTY
     world.grid[world.grid == world.CUE] = world.EMPTY
+    world.food_count[:] = 0
     world.cue_positions = []
     if corner == 'tl':
         lo, hi = 2, max(7, int(world.size * 0.45))
     else:  # br
         lo, hi = int(world.size * 0.55), world.size - 2
     placed = 0
+    attempts = 0
     while placed < n_cues:
         r, c = rng.randint(lo, hi, 2)
         if world.grid[r, c] != world.EMPTY:
+            attempts += 1
+            if attempts > 800:
+                break
             continue
         # 与已有 cue 保持间距
         if any(abs(r - cr) + abs(c - cc) < 4 for cr, cc in world.cue_positions):
+            attempts += 1
+            if attempts > 800:
+                break
             continue
         world.grid[r, c] = world.CUE
         world.cue_positions.append((r, c))
         placed += 1
+    if not world.cue_positions:
+        return
     nf = 0
-    for cr, cc in world.cue_positions:
-        if nf >= n_food:
-            break
-        for _ in range(20):
+    # 食物堆叠：n_food 平均分配到各 cue 附近（可叠在同一格）
+    per = max(1, n_food // max(1, len(world.cue_positions)))
+    while nf < n_food:
+        for cr, cc in world.cue_positions:
+            if nf >= n_food:
+                break
             dr, dc = world.ACTIONS[rng.randint(4)]
             r, c = cr + dr * 2, cc + dc * 2
-            if 0 <= r < world.size and 0 <= c < world.size and world.grid[r, c] == world.EMPTY:
+            if 0 <= r < world.size and 0 <= c < world.size and world.grid[r, c] != world.WALL:
                 world.grid[r, c] = world.FOOD
+                world.food_count[r, c] += 1
                 nf += 1
-                break
+                if nf % per == 0:
+                    break
 
 
 def safe_respawn(world):
-    """cue 绑定 respawn，但新食物必须离所有虫子 ≥2 格（避免原地无限刷）"""
+    """cue 绑定 respawn，食物可堆叠（计数层+1），无需避开已有食物位"""
     bugs = getattr(world, 'bugs', [])
     for _ in range(300):
         if world.cue_positions:
@@ -158,9 +179,10 @@ def safe_respawn(world):
             nr, nc = cr + dr * 2, cc + dc * 2
         else:
             nr, nc = np.random.randint(1, world.size - 1, 2)
-        if 0 <= nr < world.size and 0 <= nc < world.size and world.grid[nr, nc] == world.EMPTY:
+        if 0 <= nr < world.size and 0 <= nc < world.size and world.grid[nr, nc] != world.WALL:
             if all(abs(b.pos[0] - nr) + abs(b.pos[1] - nc) >= 2 for b in bugs):
                 world.grid[nr, nc] = world.FOOD
+                world.food_count[nr, nc] += 1
                 return
 
 
@@ -265,7 +287,10 @@ class Bug:
         if 0 <= nr < world.size and 0 <= nc < world.size and world.grid[nr, nc] != world.WALL:
             self.pos = np.array([nr, nc])
             if world.grid[nr, nc] == world.FOOD:
-                world.grid[nr, nc] = world.EMPTY
+                # 可重叠食物：计数层-1，减到 0 才清格
+                world.food_count[nr, nc] -= 1
+                if world.food_count[nr, nc] <= 0:
+                    world.grid[nr, nc] = world.EMPTY
                 self.foods += 1
                 self.energy = min(1.0, self.energy + 0.3)
                 ate = True
@@ -333,6 +358,10 @@ def run_group(name, use_genes, patchy, n_bugs=10, steps=6000, seed=42, learn_fla
               world_size=15):
     rng = np.random.RandomState(seed)
     world = World(size=world_size, n_food=n_food, n_walls=3, n_cues=6, seed=seed)
+    world.food_count = np.zeros((world_size, world_size), dtype=np.int32)  # 可重叠食物计数层
+    # 同步 World.__init__ 放置的初始食物到计数层
+    for (fr, fc) in np.argwhere(world.grid == world.FOOD):
+        world.food_count[fr, fc] = 1
     if patchy:
         world.weights = QUADRANT_WEIGHTS.copy()
         world.grid = np.full((world_size, world_size), World.EMPTY, dtype=int)
@@ -444,6 +473,7 @@ def evolve(n_gens=10, steps_per_gen=3000, n_bugs=20, seed=42, n_cues=2,
     def birth_test(pool, wseed):
         """新生儿纯基因测试：不学习，测平均距产区距离"""
         tw = World(size=15, n_food=10, n_walls=3, n_cues=n_cues, seed=wseed)
+        tw.food_count = np.zeros((15, 15), dtype=np.int32)
         place_stable(tw, rng, corner='tl', n_cues=n_cues, n_food=10)
         test_bugs = []
         for i in range(n_bugs):
@@ -472,6 +502,7 @@ def evolve(n_gens=10, steps_per_gen=3000, n_bugs=20, seed=42, n_cues=2,
     for gen in range(n_gens):
         wseed = seed if env_pool is None else seed + gen * 7
         world = World(size=15, n_food=10, n_walls=3, n_cues=n_cues, seed=wseed)
+        world.food_count = np.zeros((15, 15), dtype=np.int32)
         place_stable(world, rng, corner='tl', n_cues=n_cues, n_food=10)
 
         bugs = []
@@ -732,40 +763,43 @@ if __name__ == '__main__':
         sys.exit(0)
 
     if '--bigworld' in sys.argv:
-        # 大世界验证：30×30 + 稀疏稳定产区（左上）→ env 网络远程导航价值
-        # 15×15 无增益的瓶颈 = 世界太小（感知覆盖广）；30×30 感知范围外占比高
-        print("===== 大世界 30×30 + 稳定产区：env网络远程导航价值（8000步，10虫/组）=====\n")
+        # 大世界验证 v2：30×30 + 稀疏稳定产区，扫描 n_food 验证"产区内部边际递减"
+        # 假设：env 远程导航已兑现（产区停留↑），但 24 食物 + 10 虫抢 → 觅食收益被稀缺掩盖
+        # 若 n_food↑ 时 env 增益↑ → 边际递减假设成立（导航价值被食物稀缺限制）
+        print("===== 大世界 30×30 + 稳定产区：n_food 扫描（8000步，10虫/组）=====\n")
+        print("发现：食物越富集 env 增益越负（路径锁定抑制探索）→ 补稀缺档验证价值反转\n")
         base_learn = {'mb': True, 'hip': True, 'fm': True, 'pfc': True, 'ctx': True}
         env_learn = {'mb': True, 'hip': True, 'fm': True, 'pfc': True, 'ctx': True, 'env': True}
 
-        r_noenv = run_group('无env 30x30稳定', use_genes=False, patchy=False, stable=True,
-                            learn_flags=base_learn, steps=8000, n_food=24, n_cues=4,
-                            world_size=30)
-        r_env = run_group('env(g0.3) 30x30稳定', use_genes=False, patchy=False, stable=True,
-                          learn_flags=env_learn, steps=8000, n_food=24, n_cues=4,
-                          env_gain=0.3, world_size=30)
-        r_env1 = run_group('env(g1.0) 30x30稳定', use_genes=False, patchy=False, stable=True,
-                           learn_flags=env_learn, steps=8000, n_food=24, n_cues=4,
-                           env_gain=1.0, world_size=30)
+        all_no, all_env = [], []
+        print(f"{'n_food':>6} {'组':<16} {'食物均值':>7} {'食物std':>7} {'产区停留%':>8} {'漂移std':>7}")
+        for nf in [8, 24, 48, 72]:
+            r_no = run_group('无env', use_genes=False, patchy=False, stable=True,
+                             learn_flags=base_learn, steps=8000, n_food=nf, n_cues=4,
+                             world_size=30)
+            r_env = run_group('env(g1.0)', use_genes=False, patchy=False, stable=True,
+                              learn_flags=env_learn, steps=8000, n_food=nf, n_cues=4,
+                              env_gain=1.0, world_size=30)
+            all_no.append(r_no); all_env.append(r_env)
+            gain = (r_env['foods_mean'] - r_no['foods_mean']) / max(0.1, r_no['foods_mean']) * 100
+            print(f"{nf:>6} {r_no['name']:<16} {r_no['foods_mean']:>7.1f} {r_no['foods_std']:>7.1f} "
+                  f"{r_no['near_cue_ratio']*100:>7.1f}% {r_no['drift_std']:>7.2f}")
+            print(f"{'':>6} {r_env['name']:<16} {r_env['foods_mean']:>7.1f} {r_env['foods_std']:>7.1f} "
+                  f"{r_env['near_cue_ratio']*100:>7.1f}% {r_env['drift_std']:>7.2f}  "
+                  f"(env增益 {gain:+.1f}%)")
 
-        print(f"{'组':<20} {'食物均值':>7} {'食物std':>7} {'漂移std':>7} {'熵':>5} {'产区停留%':>8}")
-        for r in [r_noenv, r_env, r_env1]:
-            print(f"{r['name']:<20} {r['foods_mean']:>7.1f} {r['foods_std']:>7.1f} {r['drift_std']:>7.2f} "
-                  f"{r['entropy_mean']:>5.2f} {r['near_cue_ratio'] * 100:>7.1f}%")
-
-        fig, axes = plt.subplots(1, 3, figsize=(15, 4.2))
-        rr = [r_noenv, r_env, r_env1]
-        names = [r['name'].split(' ')[0] for r in rr]
-        colors = ['#adb5bd', '#4cc9f0', '#4895ef']
-        axes[0].bar(range(3), [r['foods_mean'] for r in rr], color=colors)
-        axes[0].set_xticks(range(3)); axes[0].set_xticklabels(names, fontsize=9)
-        axes[0].set_title('食物均值（远程导航价值）'); axes[0].set_ylabel('foods')
-        axes[1].bar(range(3), [r['near_cue_ratio'] * 100 for r in rr], color=colors)
-        axes[1].set_xticks(range(3)); axes[1].set_xticklabels(names, fontsize=9)
-        axes[1].set_title('产区停留占比%（环境记忆引导力）'); axes[1].set_ylabel('%')
-        axes[2].bar(range(3), [r['drift_std'] for r in rr], color=colors)
-        axes[2].set_xticks(range(3)); axes[2].set_xticklabels(names, fontsize=9)
-        axes[2].set_title('权重漂移std（个体分化）'); axes[2].set_ylabel('drift std')
+        fig, axes = plt.subplots(1, 2, figsize=(13, 4.2))
+        nfs = [8, 24, 48, 72]
+        axes[0].bar(np.arange(4) - 0.15, [r['foods_mean'] for r in all_no], 0.3, label='无env', color='#adb5bd')
+        axes[0].bar(np.arange(4) + 0.15, [r['foods_mean'] for r in all_env], 0.3, label='env(g1.0)', color='#f72585')
+        axes[0].set_xticks(range(4)); axes[0].set_xticklabels([f'{n}' for n in nfs])
+        axes[0].set_title('食物均值 vs n_food（稀缺时env增益?富集时拖累?）')
+        axes[0].set_xlabel('n_food'); axes[0].set_ylabel('foods'); axes[0].legend()
+        axes[1].bar(np.arange(4) - 0.15, [r['near_cue_ratio']*100 for r in all_no], 0.3, label='无env', color='#adb5bd')
+        axes[1].bar(np.arange(4) + 0.15, [r['near_cue_ratio']*100 for r in all_env], 0.3, label='env(g1.0)', color='#f72585')
+        axes[1].set_xticks(range(4)); axes[1].set_xticklabels([f'{n}' for n in nfs])
+        axes[1].set_title('产区停留% vs n_food（env锁在产区=路径锁定）')
+        axes[1].set_xlabel('n_food'); axes[1].set_ylabel('%'); axes[1].legend()
         plt.tight_layout()
         plt.savefig('multi_bug_bigworld_result.png', dpi=110)
         print("\n图表已保存: multi_bug_bigworld_result.png")
