@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 from embryo import World, MushroomBody, Hippocampus, ForwardModel, LanguageChannel, ContextModulator, PrefrontalCortex
 
 
-def smell_at(world, pos):
+def smell_at(world, pos, smell_range=2):
     smell = np.zeros(4, dtype=np.float32)
     # 可重叠食物：嗅觉看计数层（food_count>0 即存在）
     if not hasattr(world, 'food_count'):
@@ -34,7 +34,7 @@ def smell_at(world, pos):
             continue
         dists = np.abs(foods[:, 0] - nr) + np.abs(foods[:, 1] - nc)
         min_dist = dists.min()
-        if min_dist <= 2:
+        if min_dist <= smell_range:
             smell[i] = 1.0 / (min_dist + 1)
     return smell
 
@@ -190,17 +190,20 @@ def place_stable(world, rng, corner='tl', n_cues=6, n_food=10):
 
 
 def safe_respawn(world):
-    """cue 绑定 respawn，食物可堆叠（计数层+1），无需避开已有食物位"""
+    """cue 绑定 respawn，食物可堆叠（计数层+1）
+    重生点：cue 周围 1~5 格（与虫群出生带错开，避免活虫占满重生点导致食物枯竭）
+    只检查活虫距离 ≥1（不重叠虫身即可，尸体不占生态位）"""
     bugs = getattr(world, 'bugs', [])
     for _ in range(300):
         if world.cue_positions:
             cr, cc = world.cue_positions[np.random.randint(len(world.cue_positions))]
             dr, dc = world.ACTIONS[np.random.randint(4)]
-            nr, nc = cr + dr * 2, cc + dc * 2
+            dist = np.random.randint(1, 6)
+            nr, nc = cr + dr * dist, cc + dc * dist
         else:
             nr, nc = np.random.randint(1, world.size - 1, 2)
         if 0 <= nr < world.size and 0 <= nc < world.size and world.grid[nr, nc] != world.WALL:
-            if all(abs(b.pos[0] - nr) + abs(b.pos[1] - nc) >= 2 for b in bugs):
+            if all(abs(b.pos[0] - nr) + abs(b.pos[1] - nc) >= 1 for b in bugs if b.alive):
                 world.grid[nr, nc] = world.FOOD
                 world.food_count[nr, nc] += 1
                 return
@@ -211,10 +214,12 @@ class Bug:
 
     def __init__(self, pos, genome, ckpt='checkpoints', seed=42, learn_flags=None, shared=None,
                  energy_cost_base=0.002, patchy=False, env_gain=None, env_decay=None,
-                 stable=False, world_size=15):
+                 stable=False, world_size=15, natural=False,
+                 mature_age=None, reproduce_threshold=0.6, reproduce_cost=0.7,
+                 birth_energy=0.8, litter_size=1, smell_range=2, max_age=None):
         self.pos = np.array(pos, dtype=int)
         self.world_size = world_size
-        self.energy = 0.8
+        self.energy = birth_energy
         self.alive = True
         self.foods = 0
         self.deaths = 0
@@ -234,6 +239,18 @@ class Bug:
         self.smell_sens = g.get('smell_sens', 1.0)     # 嗅觉硬件灵敏度（感知输入层）
         self.energy_cost = g.get('energy_cost', 1.0)   # 代谢率
         self.explore_noise = g.get('explore_noise', 0.2)
+        # ---- 寿命/自然繁殖（B 方案：繁殖即死，natural=True 才启用）----
+        self.age = 0
+        self.gen = 0
+        self.children = 0
+        self.death_cause = None
+        self.natural = natural
+        self.reproduce_threshold = reproduce_threshold
+        self.reproduce_cost = reproduce_cost
+        self.litter_size = litter_size
+        self.smell_range = smell_range
+        self.max_age = max_age
+        self.mature_age = g.get('mature_age', mature_age) if g else mature_age
         # 环境持续学习网络（独立Hebbian，不吃奖惩；由 lf['env'] 控制开关）
         self.env = (EnvHebbian(size=world_size,
                                decay=env_decay if env_decay is not None else g.get('env_decay', 0.999),
@@ -274,7 +291,7 @@ class Bug:
 
     def decide_and_learn(self, world):
         # ---- 感知（每虫独立）----
-        smell = smell_at(world, self.pos) * self.smell_sens   # 基因：嗅觉硬件
+        smell = smell_at(world, self.pos, self.smell_range) * self.smell_sens   # 基因：嗅觉硬件
         vision = see_at(world, self.pos)
         lang_input = np.zeros(4, dtype=np.float32)
         sensory = np.concatenate([vision, lang_input])
@@ -348,15 +365,75 @@ class Bug:
         if self.lf['ctx']:
             self.ctx.learn(dopamine)
 
-        # ---- 代谢（基因：能量消耗）----
+        # ---- 代谢（基因：能量消耗）+ 年龄 ----
+        self.age += 1
         self.energy -= self.energy_cost_base * self.energy_cost
         if self.energy <= 0:
             self.alive = False
             self.deaths += 1
+            self.death_cause = 'starve'
+        elif self.max_age is not None and self.age >= self.max_age:
+            self.alive = False
+            self.deaths += 1
+            self.death_cause = 'age'
 
     def drift(self):
         """权重漂移 = 当前大脑离出生大脑多远（个体分化的直接证据）"""
         return float(np.linalg.norm(self.mb.W_out - self.init_W))
+
+    def reproduce(self, world, rng):
+        """自然繁殖（B 方案：繁殖即死 / semelparity，多胎）
+        成熟 + 能量≥阈值 → 一次分裂出 litter_size 个后代；父代能量清零死亡（能量全给后代）
+        每个后代独立继承基因 + 高斯突变（与 evolve() 突变规则一致）"""
+        if not (self.alive and self.natural):
+            return None
+        if self.mature_age is None or self.age < self.mature_age:
+            return None
+        if self.energy < self.reproduce_threshold:
+            return None
+        newborns = []
+        for _ in range(self.litter_size):
+            child = {}
+            for k, v in self.genes.items():
+                child[k] = v * float(rng.uniform(0.9, 1.1))
+            # 物理边界：防止有害漂移失控（真实基因有结构上限）
+            for k in child:
+                if k == 'mature_age':
+                    child[k] = min(400.0, max(10.0, child[k]))
+                elif k == 'energy_cost':
+                    child[k] = min(3.0, max(0.3, child[k]))
+                elif k == 'explore_noise':
+                    child[k] = min(1.0, max(0.01, child[k]))
+                elif k == 'env_decay':
+                    child[k] = min(0.9999, max(0.9, child[k]))
+                else:
+                    child[k] = min(5.0, max(0.1, child[k]))
+            pos = None
+            for _ in range(24):
+                dr, dc = world.ACTIONS[rng.randint(4)]
+                nr, nc = int(self.pos[0]) + dr * 2, int(self.pos[1]) + dc * 2
+                if 0 <= nr < world.size and 0 <= nc < world.size and world.grid[nr, nc] != world.WALL:
+                    if all(abs(b.pos[0] - nr) + abs(b.pos[1] - nc) >= 1 for b in world.bugs if b.alive):
+                        pos = (nr, nc)
+                        break
+            if pos is None:
+                pos = (int(self.pos[0]), int(self.pos[1]))
+            child_bug = Bug(pos, child, seed=42, learn_flags=self.lf, stable=self.stable,
+                            patchy=self.patchy, env_gain=None, env_decay=None,
+                            energy_cost_base=self.energy_cost_base, world_size=self.world_size,
+                            natural=True, mature_age=self.mature_age,
+                            reproduce_threshold=self.reproduce_threshold,
+                            reproduce_cost=self.reproduce_cost,
+                            birth_energy=self.energy, litter_size=self.litter_size,
+                            smell_range=self.smell_range, max_age=self.max_age)
+            child_bug.gen = self.gen + 1
+            newborns.append(child_bug)
+        self.energy = 0.0
+        self.alive = False
+        self.deaths += 1
+        self.death_cause = 'reproduced'
+        self.children += len(newborns)
+        return newborns
 
 
 def make_genome(rng, scale=1.0):
@@ -370,6 +447,7 @@ def make_genome(rng, scale=1.0):
         'explore_noise': rng.uniform(0.05 * scale, 0.2 + 0.3 * scale),  # 探索/保守
         'env_decay': rng.uniform(0.997, 0.9999),   # 环境跟踪速度（快=易适应变化/易被噪声骗）
         'env_gain': rng.uniform(0.5, 2.0),         # 环境偏置强度（敏感/迟钝）
+        'mature_age': rng.uniform(20.0, 80.0),     # 成熟年龄（步）：多快能繁殖（自然选择焦点）
     }
 
 
@@ -617,8 +695,170 @@ def evolve(n_gens=10, steps_per_gen=3000, n_bugs=20, seed=42, n_cues=2,
             'explore_std': explore_std}
 
 
+def natural_evolve(steps=15000, n_bugs=24, seed=42, world_size=15, n_food=48,
+                   n_cues=6, max_pop=80, mature_default=40, energy_cost_base=0.002,
+                   reproduce_threshold=0.4, reproduce_cost=0.7,
+                   birth_energy=1.0, litter_size=3, smell_range=5, max_age=500,
+                   lifespan=True, verbose_every=2000):
+    """自然生命周期进化（B 方案：繁殖即死 / semelparity，多胎）
+    无代际人为选择：没有 topk/锦标赛/轮盘赌，没有"饿死复活"
+    lifespan=True : 自然版——饿死即移除、成熟+能量够自动繁殖、父代繁殖即死 → 世代更替由自然死亡驱动
+    lifespan=False: 对照版——饿死复活、不繁殖（基因池固定，无演化）
+    指标：种群规模 / 成熟年龄基因演化 / 死亡年龄分布 / 死因构成 / 最大世代"""
+    rng = np.random.RandomState(seed)
+    world = World(size=world_size, n_food=n_food, n_walls=3, n_cues=n_cues, seed=seed)
+    world.food_count = np.zeros((world_size, world_size), dtype=np.int32)
+    for (fr, fc) in np.argwhere(world.grid == world.FOOD):
+        world.food_count[fr, fc] = 1
+    place_stable(world, rng, corner='tl', n_cues=n_cues, n_food=n_food)
+    learn = {'mb': True, 'hip': True, 'fm': True, 'pfc': True, 'ctx': True, 'env': True}
+
+    bugs = []
+    for i in range(n_bugs):
+        # 奠基种群：出生在产区（cue）附近——先让种群立住，之后的一切交给自然机制
+        if world.cue_positions:
+            cr, cc = world.cue_positions[i % len(world.cue_positions)]
+        else:
+            cr, cc = rng.randint(2, world_size - 2, 2)
+        for _ in range(30):
+            dr, dc = world.ACTIONS[rng.randint(4)]
+            r, c = cr + dr * 2, cc + dc * 2
+            if 0 <= r < world_size and 0 <= c < world_size and world.grid[r, c] != world.WALL:
+                if all(abs(b.pos[0] - r) + abs(b.pos[1] - c) >= 2 for b in bugs):
+                    break
+        else:
+            r, c = cr, cc
+        bugs.append(Bug([r, c], make_genome(rng, 1.0), seed=42, learn_flags=learn,
+                        stable=True, patchy=False, natural=lifespan,
+                        energy_cost_base=energy_cost_base,
+                        mature_age=mature_default,
+                        reproduce_threshold=reproduce_threshold,
+                        reproduce_cost=reproduce_cost,
+                        birth_energy=birth_energy, litter_size=litter_size,
+                        smell_range=smell_range, max_age=max_age if lifespan else None,
+                        world_size=world_size))
+    world.bugs = bugs
+
+    pop_seq, mature_seq, food_seq = [], [], []
+    death_ages, death_causes = [], []
+    gen_max = 0
+    logged = set()
+
+    def alive():
+        return [b for b in bugs if b.alive]
+
+    for step in range(steps):
+        if lifespan:
+            for b in alive():
+                b.decide_and_learn(world)
+            for b in alive():
+                n_alive = len(alive())
+                # 密度依赖繁殖抑制：活虫过半容量后越满越可能跳过（渐进，非硬断）
+                if rng.rand() < max(0.0, (n_alive - max_pop * 0.5) / (max_pop * 0.5)):
+                    continue
+                newborns = b.reproduce(world, rng)
+                if newborns:
+                    bugs.extend(newborns)
+                    gen_max = max(gen_max, max(ch.gen for ch in newborns))
+            world.bugs = bugs
+            for b in bugs:
+                if not b.alive and b.death_cause and id(b) not in logged:
+                    logged.add(id(b))
+                    death_ages.append(b.age)
+                    death_causes.append(b.death_cause)
+            # 清理已记录死亡的死虫（防长跑内存膨胀：只保留活虫 + 未记录的死虫）
+            if len(bugs) > max_pop * 4:
+                bugs = [b for b in bugs if b.alive or id(b) not in logged]
+                world.bugs = bugs
+        else:
+            for bug in bugs:
+                if bug.alive:
+                    bug.decide_and_learn(world)
+                else:
+                    bug.energy = 0.8
+                    bug.pos = np.array([rng.randint(2, world_size - 2), rng.randint(2, world_size - 2)], dtype=int)
+                    bug.alive = True
+        if step % 500 == 0:
+            live = alive()
+            pop_seq.append(len(live))
+        if step % 1000 == 0:
+            live = alive()
+            if live:
+                mature_seq.append(np.mean([b.mature_age for b in live]))
+                food_seq.append(np.mean([b.foods for b in live]))
+        if verbose_every and step % verbose_every == 0:
+            print(f"  step {step:>5}: 活虫 {len(alive()):>3} | 最大世代 {gen_max:>2} | "
+                  f"累计死亡 {len(logged):>3} (饿死 {death_causes.count('starve')}, "
+                  f"繁殖死 {death_causes.count('reproduced')}, 老死 {death_causes.count('age')})")
+
+    return {'pop': pop_seq, 'mature': mature_seq, 'food': food_seq,
+            'death_ages': np.array(death_ages), 'death_causes': death_causes,
+            'gen_max': gen_max, 'n_bugs': n_bugs, 'max_pop': max_pop}
+
+
 if __name__ == '__main__':
     import sys
+    steps_override = None
+    for i, a in enumerate(sys.argv):
+        if a == '--steps':
+            steps_override = int(sys.argv[i + 1])
+    if '--natural' in sys.argv:
+        # 自然生命周期进化（B 方案：繁殖即死）：无代际人为选择
+        # 对照 = 老行为（饿死复活、不繁殖）：基因池固定 → 证明"寿命+自然繁殖"才产生演化
+        print("===== 自然生命周期进化：繁殖即死（semelparity），3 seeds =====\n")
+        seeds = [42, 43, 44]
+        runs = []
+        for s in seeds:
+            print(f"\n--- seed {s} 自然版 ---")
+            r = natural_evolve(seed=s, steps=steps_override or 15000)
+            runs.append(r)
+            print(f"    终点: 种群 {r['pop'][-1]} | 最大世代 {r['gen_max']} | "
+                  f"死亡 {len(r['death_ages'])} 只 (饿死 {r['death_causes'].count('starve')}, "
+                  f"繁殖死 {r['death_causes'].count('reproduced')}, "
+                  f"老死 {r['death_causes'].count('age')}) | "
+                  f"平均死亡年龄 {r['death_ages'].mean():.0f}")
+        print("\n--- seed 42 对照（无寿命：饿死复活、不繁殖）---")
+        ctl = natural_evolve(seed=42, lifespan=False, steps=steps_override or 15000)
+
+        from collections import Counter
+        import matplotlib.pyplot as plt
+        x = np.arange(len(runs[0]['pop'])) * 500
+        fig, axes = plt.subplots(2, 2, figsize=(13, 9))
+        for r in runs:
+            axes[0, 0].plot(x, r['pop'], linewidth=1.5, color='#7a4fd0')
+        axes[0, 0].plot(x, ctl['pop'], '--', color='#adb5bd', linewidth=2, label='对照（无寿命）')
+        axes[0, 0].set_xlabel('step'); axes[0, 0].set_ylabel('活虫数')
+        axes[0, 0].set_title('种群规模（自然版 3 seeds + 对照）'); axes[0, 0].legend()
+        for r in runs:
+            axes[0, 1].plot(np.arange(len(r['mature'])) * 1000, r['mature'],
+                            linewidth=1.5, color='#7a4fd0')
+        axes[0, 1].plot(np.arange(len(ctl['mature'])) * 1000, ctl['mature'], '--',
+                        color='#adb5bd', linewidth=2, label='对照（无寿命）')
+        axes[0, 1].set_xlabel('step'); axes[0, 1].set_ylabel('成熟年龄基因均值')
+        axes[0, 1].set_title('成熟年龄基因演化（无寿命=平线不演化）'); axes[0, 1].legend()
+        ages = np.concatenate([r['death_ages'] for r in runs])
+        axes[1, 0].hist(ages, bins=30, color='#7a4fd0', alpha=0.85)
+        axes[1, 0].set_xlabel('死亡年龄（步）'); axes[1, 0].set_ylabel('只数')
+        axes[1, 0].set_title('死亡年龄分布（3 seeds 合并）')
+        causes = Counter()
+        for r in runs:
+            causes.update(r['death_causes'])
+        cause_names = {'starve': '饿死', 'reproduced': '繁殖即死', 'age': '老死'}
+        cause_colors = {'starve': '#c0392b', 'reproduced': '#7a4fd0', 'age': '#2e6fd6'}
+        labels = [c for c in ['starve', 'reproduced', 'age'] if causes[c] > 0]
+        vals = [causes[c] for c in labels]
+        axes[1, 1].bar([cause_names[c] for c in labels], vals,
+                       color=[cause_colors[c] for c in labels])
+        for i, v in enumerate(vals):
+            axes[1, 1].text(i, v + 5, str(v), ha='center')
+        axes[1, 1].set_title('死因构成（3 seeds 合并）')
+        plt.tight_layout()
+        plt.savefig('multi_bug_natural_result.png', dpi=110)
+        print("\n图表已保存: multi_bug_natural_result.png")
+        print(f"\n汇总: 平均最大世代 {np.mean([r['gen_max'] for r in runs]):.1f} | "
+              f"平均死亡年龄 {ages.mean():.0f} 步 | "
+              f"死因 饿死 {causes['starve']} / 繁殖死 {causes['reproduced']} / 老死 {causes['age']}")
+        sys.exit(0)
     if '--cross' in sys.argv:
         # 繁殖策略对比：纯突变 vs 突变+基因交叉（Baldwin 框架内）
         # 交叉 = 双亲各取一半基因位点重组 → 有利组合更快扩散？
