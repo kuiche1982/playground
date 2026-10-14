@@ -480,21 +480,24 @@ def run_group(name, use_genes, patchy, n_bugs=10, steps=6000, seed=42, learn_fla
 
 def evolve(n_gens=10, steps_per_gen=3000, n_bugs=20, seed=42, n_cues=2,
            test_steps=2000, env_pool=None, top_k=8, world_size=15, n_food=10,
-           cross=False):
-    """Baldwin效应验证 v2：固化指标 = 出生测试时到产区的平均距离
+           cross=False, learn_env=True, migrate_at=None):
+    """Baldwin效应验证：固化指标 = 出生测试时到产区的平均距离
     新生儿不学习 → 若环境适应已固化进基因，出生就有"去产区"的空间偏好
-    env_pool: None=跨代稳定；'shuffle'=每代换布局（对照组）"""
+    env_pool: None=跨代稳定；'shuffle'=每代换布局（对照组）
+    learn_env: 个体是否带 EnvHebbian 环境网络（耦合验证）
+    migrate_at: 第 N 代起产区从左上迁到右下（固化惯性验证）"""
     rng = np.random.RandomState(seed)
     pool = [make_genome(rng, 1.0) for _ in range(n_bugs)]
     birth_dist = []   # 出生测试：平均距产区距离（越小=固化越深）
-    learn = {'mb': True, 'hip': True, 'fm': True, 'pfc': True, 'ctx': True, 'env': True}
+    explore_seq, smell_seq = [], []
+    learn = {'mb': True, 'hip': True, 'fm': True, 'pfc': True, 'ctx': True, 'env': learn_env}
     nolearn = {'mb': False, 'hip': False, 'fm': False, 'pfc': False, 'ctx': False, 'env': False}
 
-    def birth_test(pool, wseed):
+    def birth_test(pool, wseed, corner='tl'):
         """新生儿纯基因测试：不学习，测平均距产区距离"""
         tw = World(size=world_size, n_food=n_food, n_walls=3, n_cues=n_cues, seed=wseed)
         tw.food_count = np.zeros((world_size, world_size), dtype=np.int32)
-        place_stable(tw, rng, corner='tl', n_cues=n_cues, n_food=n_food)
+        place_stable(tw, rng, corner=corner, n_cues=n_cues, n_food=n_food)
         test_bugs = []
         for i in range(n_bugs):
             r, c = rng.randint(2, world_size - 2, 2)
@@ -521,9 +524,10 @@ def evolve(n_gens=10, steps_per_gen=3000, n_bugs=20, seed=42, n_cues=2,
 
     for gen in range(n_gens):
         wseed = seed if env_pool is None else seed + gen * 7
+        corner = 'br' if (migrate_at is not None and gen >= migrate_at) else 'tl'
         world = World(size=world_size, n_food=n_food, n_walls=3, n_cues=n_cues, seed=wseed)
         world.food_count = np.zeros((world_size, world_size), dtype=np.int32)
-        place_stable(world, rng, corner='tl', n_cues=n_cues, n_food=n_food)
+        place_stable(world, rng, corner=corner, n_cues=n_cues, n_food=n_food)
 
         bugs = []
         for i in range(n_bugs):
@@ -542,7 +546,7 @@ def evolve(n_gens=10, steps_per_gen=3000, n_bugs=20, seed=42, n_cues=2,
                     bug.decide_and_learn(world)
                 else:
                     bug.energy = 0.8
-                    bug.pos = np.array([rng.randint(2, 13), rng.randint(2, 13)], dtype=int)
+                    bug.pos = np.array([rng.randint(2, world_size - 2), rng.randint(2, world_size - 2)], dtype=int)
                     bug.alive = True
 
         # 繁殖：Top-k 轮转复制 + 高斯突变，填满种群
@@ -563,15 +567,16 @@ def evolve(n_gens=10, steps_per_gen=3000, n_bugs=20, seed=42, n_cues=2,
             new_pool.append(child)
         pool = new_pool
 
-        d = birth_test(pool, wseed)
+        d = birth_test(pool, wseed, corner)
         birth_dist.append(d)
+        explore_seq.append(np.mean([p['explore_noise'] for p in pool]))
+        smell_seq.append(np.mean([p['smell_sens'] for p in pool]))
         gen_foods = np.array([b.foods for b in bugs])
         print(f"G{gen}: 学习期食物 {gen_foods.mean():.1f}±{gen_foods.std():.1f} | "
               f"出生距产区 {d:.2f} | "
-              f"smell {np.mean([p['smell_sens'] for p in pool]):.2f} "
-              f"explore {np.mean([p['explore_noise'] for p in pool]):.2f}")
+              f"smell {smell_seq[-1]:.2f} explore {explore_seq[-1]:.2f}")
 
-    return birth_dist
+    return {'birth': birth_dist, 'explore': explore_seq, 'smell': smell_seq}
 
 
 if __name__ == '__main__':
@@ -587,14 +592,75 @@ if __name__ == '__main__':
 
         import matplotlib.pyplot as plt
         plt.figure(figsize=(7, 4.5))
-        plt.plot(range(12), mut, 'o-', label='纯突变', color='#adb5bd', linewidth=2)
-        plt.plot(range(12), cr, 's--', label='突变+交叉', color='#f72585', linewidth=2)
+        plt.plot(range(12), mut['birth'], 'o-', label='纯突变', color='#adb5bd', linewidth=2)
+        plt.plot(range(12), cr['birth'], 's--', label='突变+交叉', color='#f72585', linewidth=2)
         plt.xlabel('世代'); plt.ylabel('出生距产区')
         plt.title('交叉重组对固化速度/终点的影响')
         plt.legend()
         plt.tight_layout()
         plt.savefig('multi_bug_cross_result.png', dpi=110)
         print("\n图表已保存: multi_bug_cross_result.png")
+        sys.exit(0)
+    if '--multiseed' in sys.argv:
+        # 多 seed 坐实 Baldwin + EnvHebbian 耦合
+        # 3 seeds × env on/off → 平均曲线+误差棒；env on 是否加速/加固化
+        print("===== 多seed坐实Baldwin + EnvHebbian耦合（15×15, 12代×20虫, 3 seeds）=====\n")
+        seeds = [42, 43, 44]
+        env_runs, noenv_runs = [], []
+        for s in seeds:
+            print(f"\n--- seed {s} env ON ---")
+            env_runs.append(evolve(n_gens=12, seed=s, learn_env=True))
+            print(f"--- seed {s} env OFF ---")
+            noenv_runs.append(evolve(n_gens=12, seed=s, learn_env=False))
+
+        import matplotlib.pyplot as plt
+        env_b = np.array([r['birth'] for r in env_runs])
+        noenv_b = np.array([r['birth'] for r in noenv_runs])
+        env_e = np.array([r['explore'] for r in env_runs])
+        noenv_e = np.array([r['explore'] for r in noenv_runs])
+        gens = range(12)
+        fig, axes = plt.subplots(1, 2, figsize=(13, 4.5))
+        axes[0].errorbar(gens, env_b.mean(0), yerr=env_b.std(0), fmt='o-', label='env ON (3 seeds)', color='#f72585', capsize=3)
+        axes[0].errorbar(gens, noenv_b.mean(0), yerr=noenv_b.std(0), fmt='s--', label='env OFF (3 seeds)', color='#adb5bd', capsize=3)
+        axes[0].set_xlabel('世代'); axes[0].set_ylabel('出生距产区')
+        axes[0].set_title('固化趋势（多seed平均±std）'); axes[0].legend()
+        axes[1].errorbar(gens, env_e.mean(0), yerr=env_e.std(0), fmt='o-', label='env ON', color='#f72585', capsize=3)
+        axes[1].errorbar(gens, noenv_e.mean(0), yerr=noenv_e.std(0), fmt='s--', label='env OFF', color='#adb5bd', capsize=3)
+        axes[1].set_xlabel('世代'); axes[1].set_ylabel('explore 基因均值')
+        axes[1].set_title('探索基因演化（固化载体）'); axes[1].legend()
+        plt.tight_layout()
+        plt.savefig('multi_bug_multiseed_result.png', dpi=110)
+        print(f"\n终点出生距产区: env ON {env_b[:,-1].mean():.2f}±{env_b[:,-1].std():.2f} | "
+              f"env OFF {noenv_b[:,-1].mean():.2f}±{noenv_b[:,-1].std():.2f}")
+        print(f"终点 explore: env ON {env_e[:,-1].mean():.3f} | env OFF {noenv_e[:,-1].mean():.3f}")
+        print("图表已保存: multi_bug_multiseed_result.png")
+        sys.exit(0)
+    if '--migrate' in sys.argv:
+        # 固化惯性：稳定 8 代（固化到左上）→ 第 8 代产区迁到右下，继续 4 代
+        # 固化组 vs 打乱组：迁移后出生距右下产区下降速度 = 惯性/反转能力
+        print("===== 环境迁移固化惯性（15×15, 12代×20虫：稳定8代→迁移右下4代）=====\n")
+        print("固化组（稳定8代→迁移）:")
+        fix = evolve(n_gens=12, seed=42, migrate_at=8, env_pool=None)
+        print("\n打乱组（每代换产区，无固化）:")
+        shuf = evolve(n_gens=12, seed=42, migrate_at=8, env_pool='shuffle')
+
+        import matplotlib.pyplot as plt
+        fig, axes = plt.subplots(1, 2, figsize=(13, 4.5))
+        x = np.arange(12)
+        axes[0].plot(x, fix['birth'], 'o-', label='固化组（8代固化→迁移）', color='#f72585', linewidth=2)
+        axes[0].plot(x, shuf['birth'], 's--', label='打乱组（无固化）', color='#adb5bd', linewidth=2)
+        axes[0].axvline(8, color='#333', linestyle=':', label='产区迁移')
+        axes[0].set_xlabel('世代'); axes[0].set_ylabel('出生距当前产区')
+        axes[0].set_title('迁移后惯性（固化组反转慢=惯性大）'); axes[0].legend()
+        axes[1].plot(x, fix['explore'], 'o-', label='固化组', color='#f72585', linewidth=2)
+        axes[1].plot(x, shuf['explore'], 's--', label='打乱组', color='#adb5bd', linewidth=2)
+        axes[1].axvline(8, color='#333', linestyle=':')
+        axes[1].set_xlabel('世代'); axes[1].set_ylabel('explore 基因')
+        axes[1].set_title('迁移后探索基因反转'); axes[1].legend()
+        plt.tight_layout()
+        plt.savefig('multi_bug_migrate_result.png', dpi=110)
+        print(f"\n迁移后4代（G8-11）距产区均值: 固化组 {np.mean(fix['birth'][8:]):.2f} | 打乱组 {np.mean(shuf['birth'][8:]):.2f}")
+        print("图表已保存: multi_bug_migrate_result.png")
         sys.exit(0)
     if '--evolve' in sys.argv:
         print("===== Baldwin效应：产区偏好跨代固化（15×15 12代×20虫）=====\n")
@@ -613,12 +679,12 @@ if __name__ == '__main__':
 
         import matplotlib.pyplot as plt
         fig, axes = plt.subplots(1, 2, figsize=(13, 4.5))
-        axes[0].plot(range(12), stable, 'o-', label='15×15 稳定', color='#f72585', linewidth=2)
-        axes[0].plot(range(12), shuffle, 's--', label='15×15 打乱', color='#adb5bd', linewidth=2)
+        axes[0].plot(range(12), stable['birth'], 'o-', label='15×15 稳定', color='#f72585', linewidth=2)
+        axes[0].plot(range(12), shuffle['birth'], 's--', label='15×15 打乱', color='#adb5bd', linewidth=2)
         axes[0].set_xlabel('世代'); axes[0].set_ylabel('出生距产区（15×15 尺度）')
         axes[0].set_title('15×15 固化趋势'); axes[0].legend()
-        axes[1].plot(range(12), big_stable, 'o-', label='30×30 稳定', color='#f72585', linewidth=2)
-        axes[1].plot(range(12), big_shuffle, 's--', label='30×30 打乱', color='#adb5bd', linewidth=2)
+        axes[1].plot(range(12), big_stable['birth'], 'o-', label='30×30 稳定', color='#f72585', linewidth=2)
+        axes[1].plot(range(12), big_shuffle['birth'], 's--', label='30×30 打乱', color='#adb5bd', linewidth=2)
         axes[1].set_xlabel('世代'); axes[1].set_ylabel('出生距产区（30×30 尺度）')
         axes[1].set_title('30×30 大世界固化（距离尺度更大=更敏感）'); axes[1].legend()
         plt.tight_layout()
