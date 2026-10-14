@@ -489,12 +489,16 @@ def evolve(n_gens=10, steps_per_gen=3000, n_bugs=20, seed=42, n_cues=2,
     rng = np.random.RandomState(seed)
     pool = [make_genome(rng, 1.0) for _ in range(n_bugs)]
     birth_dist = []   # 出生测试：平均距产区距离（越小=固化越深）
+    birth_food = []   # 出生测试：食物数（固化对信号 → 出生就能吃到；固化错信号 → 饿死）
+    birth_deaths = [] # 出生测试：饿死次数
     explore_seq, smell_seq = [], []
     learn = {'mb': True, 'hip': True, 'fm': True, 'pfc': True, 'ctx': True, 'env': learn_env}
     nolearn = {'mb': False, 'hip': False, 'fm': False, 'pfc': False, 'ctx': False, 'env': False}
 
     def birth_test(pool, wseed, corner='tl'):
-        """新生儿纯基因测试：不学习，测平均距产区距离"""
+        """新生儿纯基因测试：不学习
+        指标1 = 平均距产区距离（空间偏好固化程度）
+        指标2 = 测试期食物数均值（固化对信号 → 出生就能吃到；固化错信号 → 饿死）"""
         tw = World(size=world_size, n_food=n_food, n_walls=3, n_cues=n_cues, seed=wseed)
         tw.food_count = np.zeros((world_size, world_size), dtype=np.int32)
         place_stable(tw, rng, corner=corner, n_cues=n_cues, n_food=n_food)
@@ -509,6 +513,7 @@ def evolve(n_gens=10, steps_per_gen=3000, n_bugs=20, seed=42, n_cues=2,
         cue_arr = np.array(tw.cue_positions)
         total_d = 0.0
         n = 0
+        deaths = 0
         for step in range(test_steps):
             for bug in test_bugs:
                 if bug.alive:
@@ -520,7 +525,9 @@ def evolve(n_gens=10, steps_per_gen=3000, n_bugs=20, seed=42, n_cues=2,
                     bug.energy = 0.8
                     bug.pos = np.array([rng.randint(2, world_size - 2), rng.randint(2, world_size - 2)], dtype=int)
                     bug.alive = True
-        return total_d / max(1, n)
+                    deaths += 1
+        foods_arr = np.array([b.foods for b in test_bugs])
+        return total_d / max(1, n), foods_arr.mean(), deaths
 
     for gen in range(n_gens):
         wseed = seed if env_pool is None else seed + gen * 7
@@ -567,16 +574,19 @@ def evolve(n_gens=10, steps_per_gen=3000, n_bugs=20, seed=42, n_cues=2,
             new_pool.append(child)
         pool = new_pool
 
-        d = birth_test(pool, wseed, corner)
+        d, bf, bd = birth_test(pool, wseed, corner)
         birth_dist.append(d)
+        birth_food.append(bf)
+        birth_deaths.append(bd)
         explore_seq.append(np.mean([p['explore_noise'] for p in pool]))
         smell_seq.append(np.mean([p['smell_sens'] for p in pool]))
         gen_foods = np.array([b.foods for b in bugs])
         print(f"G{gen}: 学习期食物 {gen_foods.mean():.1f}±{gen_foods.std():.1f} | "
-              f"出生距产区 {d:.2f} | "
+              f"出生距产区 {d:.2f} 出生食物 {bf:.1f} 出生饿死 {bd} | "
               f"smell {smell_seq[-1]:.2f} explore {explore_seq[-1]:.2f}")
 
-    return {'birth': birth_dist, 'explore': explore_seq, 'smell': smell_seq}
+    return {'birth': birth_dist, 'explore': explore_seq, 'smell': smell_seq,
+            'birth_food': birth_food, 'birth_deaths': birth_deaths}
 
 
 if __name__ == '__main__':
@@ -634,6 +644,49 @@ if __name__ == '__main__':
               f"env OFF {noenv_b[:,-1].mean():.2f}±{noenv_b[:,-1].std():.2f}")
         print(f"终点 explore: env ON {env_e[:,-1].mean():.3f} | env OFF {noenv_e[:,-1].mean():.3f}")
         print("图表已保存: multi_bug_multiseed_result.png")
+        sys.exit(0)
+    if '--bigpop' in sys.argv:
+        # 升级规模 + 固化信号正确性诊断
+        # 32虫×15代×2 seeds，稳定 vs 打乱；n_food=16 降出生测试噪声
+        # 新增指标：出生测试食物数/饿死 = 固化对信号（出生就能吃）还是固化错信号（饿死淘汰）
+        print("===== 升级规模：32虫×15代×2seeds + 出生测试食物数（n_food=16）=====\n")
+        seeds = [42, 43]
+        st_runs, sh_runs = [], []
+        for s in seeds:
+            print(f"\n--- seed {s} 稳定环境 ---")
+            st_runs.append(evolve(n_gens=15, n_bugs=32, seed=s, steps_per_gen=1500,
+                                  test_steps=1200, env_pool=None, n_food=16))
+            print(f"\n--- seed {s} 打乱环境 ---")
+            sh_runs.append(evolve(n_gens=15, n_bugs=32, seed=s, steps_per_gen=1500,
+                                  test_steps=1200, env_pool='shuffle', n_food=16))
+
+        import matplotlib.pyplot as plt
+        st_b = np.array([r['birth'] for r in st_runs])
+        sh_b = np.array([r['birth'] for r in sh_runs])
+        st_f = np.array([r['birth_food'] for r in st_runs])
+        sh_f = np.array([r['birth_food'] for r in sh_runs])
+        st_e = np.array([r['explore'] for r in st_runs])
+        sh_e = np.array([r['explore'] for r in sh_runs])
+        x = range(15)
+        fig, axes = plt.subplots(1, 3, figsize=(16, 4.2))
+        axes[0].errorbar(x, st_b.mean(0), yerr=st_b.std(0), fmt='o-', label='稳定', color='#f72585', capsize=3)
+        axes[0].errorbar(x, sh_b.mean(0), yerr=sh_b.std(0), fmt='s--', label='打乱', color='#adb5bd', capsize=3)
+        axes[0].set_xlabel('世代'); axes[0].set_ylabel('出生距产区')
+        axes[0].set_title('固化趋势（距产区）'); axes[0].legend()
+        axes[1].errorbar(x, st_f.mean(0), yerr=st_f.std(0), fmt='o-', label='稳定', color='#f72585', capsize=3)
+        axes[1].errorbar(x, sh_f.mean(0), yerr=sh_f.std(0), fmt='s--', label='打乱', color='#adb5bd', capsize=3)
+        axes[1].set_xlabel('世代'); axes[1].set_ylabel('出生测试食物数')
+        axes[1].set_title('固化信号正确性（出生就能吃=固化对）'); axes[1].legend()
+        axes[2].errorbar(x, st_e.mean(0), yerr=st_e.std(0), fmt='o-', label='稳定', color='#f72585', capsize=3)
+        axes[2].errorbar(x, sh_e.mean(0), yerr=sh_e.std(0), fmt='s--', label='打乱', color='#adb5bd', capsize=3)
+        axes[2].set_xlabel('世代'); axes[2].set_ylabel('explore 基因')
+        axes[2].set_title('探索基因演化'); axes[2].legend()
+        plt.tight_layout()
+        plt.savefig('multi_bug_bigpop_result.png', dpi=110)
+        print(f"\n终点（G14）稳定 vs 打乱: 距产区 {st_b[:,-1].mean():.2f} vs {sh_b[:,-1].mean():.2f} | "
+              f"出生食物 {st_f[:,-1].mean():.1f} vs {sh_f[:,-1].mean():.1f} | "
+              f"explore {st_e[:,-1].mean():.3f} vs {sh_e[:,-1].mean():.3f}")
+        print("图表已保存: multi_bug_bigpop_result.png")
         sys.exit(0)
     if '--migrate' in sys.argv:
         # 固化惯性：稳定 8 代（固化到左上）→ 第 8 代产区迁到右下，继续 4 代
