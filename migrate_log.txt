@@ -1,0 +1,38 @@
+===== 环境迁移固化惯性（15×15, 12代×20虫：稳定8代→迁移右下4代）=====
+
+固化组（稳定8代→迁移）:
+G0: 学习期食物 11.8±20.8 | 出生距产区 3.60 | smell 1.37 explore 0.29
+/home/user/Doubao/chats/25419664949684994/playground/multi_bug_genome.py:118: RuntimeWarning: overflow encountered in multiply
+  self.density *= self.decay
+G1: 学习期食物 1.9±1.7 | 出生距产区 2.53 | smell 1.40 explore 0.29
+G2: 学习期食物 7.2±10.0 | 出生距产区 3.16 | smell 1.57 explore 0.28
+G3: 学习期食物 3.6±4.2 | 出生距产区 3.20 | smell 1.58 explore 0.29
+/home/user/Doubao/chats/25419664949684994/playground/multi_bug_genome.py:138: RuntimeWarning: overflow encountered in multiply
+  return bias * self.gain
+G4: 学习期食物 1.4±1.6 | 出生距产区 3.68 | smell 1.67 explore 0.31
+G5: 学习期食物 7.4±6.4 | 出生距产区 3.55 | smell 1.72 explore 0.37
+/home/user/Doubao/chats/25419664949684994/playground/multi_bug_genome.py:137: RuntimeWarning: overflow encountered in cast
+  bias[i] = total
+G6: 学习期食物 3.4±2.9 | 出生距产区 2.56 | smell 1.64 explore 0.32
+G7: 学习期食物 9.8±9.9 | 出生距产区 4.23 | smell 1.56 explore 0.29
+G8: 学习期食物 3.9±9.1 | 出生距产区 10.15 | smell 1.63 explore 0.26
+G9: 学习期食物 14.6±10.8 | 出生距产区 13.16 | smell 1.54 explore 0.25
+G10: 学习期食物 11.5±9.5 | 出生距产区 11.62 | smell 1.43 explore 0.24
+G11: 学习期食物 6.9±8.4 | 出生距产区 10.13 | smell 1.31 explore 0.22
+
+打乱组（每代换产区，无固化）:
+G0: 学习期食物 11.8±20.8 | 出生距产区 3.60 | smell 1.37 explore 0.29
+G1: 学习期食物 2.3±2.7 | 出生距产区 4.48 | smell 1.41 explore 0.23
+G2: 学习期食物 2.9±4.1 | 出生距产区 6.90 | smell 1.53 explore 0.24
+G3: 学习期食物 3.0±3.1 | 出生距产区 7.12 | smell 1.64 explore 0.23
+G4: 学习期食物 3.7±5.0 | 出生距产区 2.79 | smell 1.56 explore 0.29
+G5: 学习期食物 9.2±10.9 | 出生距产区 5.81 | smell 1.56 explore 0.39
+G6: 学习期食物 4.0±4.1 | 出生距产区 4.73 | smell 1.55 explore 0.36
+G7: 学习期食物 3.3±3.2 | 出生距产区 4.46 | smell 1.54 explore 0.32
+G8: 学习期食物 23.5±35.3 | 出生距产区 11.42 | smell 1.49 explore 0.32
+G9: 学习期食物 15.3±15.3 | 出生距产区 10.95 | smell 1.43 explore 0.28
+G10: 学习期食物 9.6±13.1 | 出生距产区 10.37 | smell 1.43 explore 0.23
+G11: 学习期食物 11.5±14.6 | 出生距产区 11.31 | smell 1.48 explore 0.29
+
+迁移后4代（G8-11）距产区均值: 固化组 11.26 | 打乱组 11.01
+图表已保存: multi_bug_migrate_result.png
