@@ -699,11 +699,12 @@ def natural_evolve(steps=15000, n_bugs=24, seed=42, world_size=15, n_food=48,
                    n_cues=6, max_pop=80, mature_default=40, energy_cost_base=0.002,
                    reproduce_threshold=0.4, reproduce_cost=0.7,
                    birth_energy=1.0, litter_size=3, smell_range=5, max_age=500,
-                   lifespan=True, verbose_every=2000):
+                   lifespan=True, verbose_every=2000, record_full=False):
     """自然生命周期进化（B 方案：繁殖即死 / semelparity，多胎）
     无代际人为选择：没有 topk/锦标赛/轮盘赌，没有"饿死复活"
     lifespan=True : 自然版——饿死即移除、成熟+能量够自动繁殖、父代繁殖即死 → 世代更替由自然死亡驱动
     lifespan=False: 对照版——饿死复活、不繁殖（基因池固定，无演化）
+    record_full   : 额外记录成熟年龄基因的分布统计（mean/std/min/分位数），供收敛分析
     指标：种群规模 / 成熟年龄基因演化 / 死亡年龄分布 / 死因构成 / 最大世代"""
     rng = np.random.RandomState(seed)
     world = World(size=world_size, n_food=n_food, n_walls=3, n_cues=n_cues, seed=seed)
@@ -740,6 +741,7 @@ def natural_evolve(steps=15000, n_bugs=24, seed=42, world_size=15, n_food=48,
     world.bugs = bugs
 
     pop_seq, mature_seq, food_seq = [], [], []
+    mature_stats = []
     death_ages, death_causes = [], []
     gen_max = 0
     logged = set()
@@ -784,15 +786,22 @@ def natural_evolve(steps=15000, n_bugs=24, seed=42, world_size=15, n_food=48,
         if step % 1000 == 0:
             live = alive()
             if live:
-                mature_seq.append(np.mean([b.mature_age for b in live]))
+                ma = np.array([b.mature_age for b in live])
+                mature_seq.append(ma.mean())
                 food_seq.append(np.mean([b.foods for b in live]))
+                if record_full:
+                    mature_stats.append({
+                        'step': step, 'mean': float(ma.mean()), 'std': float(ma.std()),
+                        'min': float(ma.min()), 'p10': float(np.percentile(ma, 10)),
+                        'p50': float(np.percentile(ma, 50)), 'p90': float(np.percentile(ma, 90)),
+                        'max': float(ma.max()), 'n': int(len(ma))})
         if verbose_every and step % verbose_every == 0:
             print(f"  step {step:>5}: 活虫 {len(alive()):>3} | 最大世代 {gen_max:>2} | "
                   f"累计死亡 {len(logged):>3} (饿死 {death_causes.count('starve')}, "
                   f"繁殖死 {death_causes.count('reproduced')}, 老死 {death_causes.count('age')})")
 
-    return {'pop': pop_seq, 'mature': mature_seq, 'food': food_seq,
-            'death_ages': np.array(death_ages), 'death_causes': death_causes,
+    return {'pop': pop_seq, 'mature': mature_seq, 'mature_stats': mature_stats,
+            'food': food_seq, 'death_ages': np.array(death_ages), 'death_causes': death_causes,
             'gen_max': gen_max, 'n_bugs': n_bugs, 'max_pop': max_pop}
 
 

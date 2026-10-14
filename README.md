@@ -164,6 +164,16 @@ run(n_steps=5000,
 
 共享大脑的虫子如何长出不同个体（基因×经历×环境 + 跨代固化）：见 [docs/multi_bug_experiments.md](docs/multi_bug_experiments.md)
 
+## 自然生命周期进化（繁殖即死）
+
+把繁殖从"人为选最优"改成"活虫自己繁殖"：虫子有年龄、成熟自动繁殖、父代繁殖即死、饿死/老死移除不复活——一个规则同时实现有限寿命、世代更替、繁殖自然化。结论：无寿命 = 无演化（对照铁证）；成熟年龄基因被自然选择收敛到 ~20-25（快熟占优、变异流动保留）；灭绝是随机生态风险，种群规模只降低概率不消除。
+
+```bash
+python multi_bug_genome.py --natural          # 3 seeds × 15000 步 + 无寿命对照
+python natural_convergence.py --seed 42       # 成熟年龄收敛数据（落盘 CSV）
+python natural_convergence.py --merge         # 合并 + 收敛图
+```
+
 ## 架构图
 
 见 [docs/architecture.html](docs/architecture.html)
