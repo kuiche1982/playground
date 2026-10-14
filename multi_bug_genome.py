@@ -92,8 +92,10 @@ def respawn_food_uniform(world):
 
 class EnvHebbian:
     """环境持续学习网络：无监督Hebbian，不依赖奖惩
-    只跟踪"哪里出现食物线索"，decay 让旧统计淡出 → 环境变了自动跟上
-    区别于 hip（吃到才记录的事件记忆）：EnvHebbian 每步感知即学"""
+    v3 修复三缺陷：
+      1. 方向性写入：线索来源方向累加（非脚下）→ density = 空间地图而非路径历史
+      2. 全局梯度导航：bias 扫描 10 步朝富集区（远程导航）
+      3. 近期访问抑制：走过的格子衰减 → 消除路径锁定"""
     def __init__(self, size=15, decay=0.999, gain=1.0):
         self.size = size
         self.density = np.zeros((size, size), dtype=np.float32)
@@ -101,22 +103,38 @@ class EnvHebbian:
         self.gain = gain        # 环境偏置强度（基因可调）
 
     def observe(self, pos, smell, vision):
-        """无监督：闻到/看到食物线索 → 当前位置附近食物概率+1；全局衰减"""
-        has_food_cue = smell.max() > 0 or vision[[3, 7, 11, 15]].max() > 0
-        if has_food_cue:
-            r, c = int(pos[0]), int(pos[1])
-            self.density[r, c] = min(5.0, self.density[r, c] + 1.0)
+        """方向性写入：smell[i] 表示 i 方向有食物 → density 累加到该方向 2-3 格"""
+        r, c = int(pos[0]), int(pos[1])
+        for i, (dr, dc) in enumerate(World.ACTIONS):
+            strength = float(smell[i])
+            if strength > 0:
+                for dist in [2, 3]:
+                    nr, nc = r + dr * dist, c + dc * dist
+                    if 0 <= nr < self.size and 0 <= nc < self.size:
+                        self.density[nr, nc] = min(5.0, self.density[nr, nc] + strength * 0.5)
+        # 脚下只留弱痕迹（避免完全丢失路径信息）
+        if 0 <= r < self.size and 0 <= c < self.size:
+            self.density[r, c] = min(5.0, self.density[r, c] + 0.1)
         self.density *= self.decay
 
+    def visit_inhibit(self, pos):
+        """近期访问抑制：走过的格子短期衰减（模拟海马重复抑制）"""
+        r, c = int(pos[0]), int(pos[1])
+        if 0 <= r < self.size and 0 <= c < self.size:
+            self.density[r, c] *= 0.9
+
     def bias(self, pos):
-        """输出4维方向偏置：哪边环境食物密度高"""
+        """全局梯度导航：4 方向扫描 10 步，朝 density 累计最大的方向走"""
         bias = np.zeros(4, dtype=np.float32)
         r, c = int(pos[0]), int(pos[1])
         for i, (dr, dc) in enumerate(World.ACTIONS):
-            for dist in [1, 2, 3]:
+            total = 0.0
+            for dist in range(1, 11):
                 nr, nc = r + dr * dist, c + dc * dist
-                if 0 <= nr < self.size and 0 <= nc < self.size:
-                    bias[i] += self.density[nr, nc] * (1.0 / dist)
+                if not (0 <= nr < self.size and 0 <= nc < self.size):
+                    break
+                total += self.density[nr, nc] / dist
+            bias[i] = total
         return bias * self.gain
 
 
@@ -307,6 +325,7 @@ class Bug:
         # ---- 学习（经历改写权重）----
         if self.env is not None:
             self.env.observe(self.pos, smell, vision)   # 环境网络每步无监督学习（不吃奖惩）
+            self.env.visit_inhibit(self.pos)            # 近期访问抑制：防路径锁定
         if self.lf['mb']:
             self.mb.update_trace(active_kc, action)
         # 多虫竞争下每虫正样本稀疏，训练好的空间记忆不能被 decay 抹光
@@ -460,7 +479,7 @@ def run_group(name, use_genes, patchy, n_bugs=10, steps=6000, seed=42, learn_fla
 
 
 def evolve(n_gens=10, steps_per_gen=3000, n_bugs=20, seed=42, n_cues=2,
-           test_steps=2000, env_pool=None, top_k=8):
+           test_steps=2000, env_pool=None, top_k=8, world_size=15, n_food=10):
     """Baldwin效应验证 v2：固化指标 = 出生测试时到产区的平均距离
     新生儿不学习 → 若环境适应已固化进基因，出生就有"去产区"的空间偏好
     env_pool: None=跨代稳定；'shuffle'=每代换布局（对照组）"""
@@ -472,16 +491,16 @@ def evolve(n_gens=10, steps_per_gen=3000, n_bugs=20, seed=42, n_cues=2,
 
     def birth_test(pool, wseed):
         """新生儿纯基因测试：不学习，测平均距产区距离"""
-        tw = World(size=15, n_food=10, n_walls=3, n_cues=n_cues, seed=wseed)
-        tw.food_count = np.zeros((15, 15), dtype=np.int32)
-        place_stable(tw, rng, corner='tl', n_cues=n_cues, n_food=10)
+        tw = World(size=world_size, n_food=n_food, n_walls=3, n_cues=n_cues, seed=wseed)
+        tw.food_count = np.zeros((world_size, world_size), dtype=np.int32)
+        place_stable(tw, rng, corner='tl', n_cues=n_cues, n_food=n_food)
         test_bugs = []
         for i in range(n_bugs):
-            r, c = rng.randint(2, 13, 2)
+            r, c = rng.randint(2, world_size - 2, 2)
             while tw.grid[r, c] != World.EMPTY:
-                r, c = rng.randint(2, 13, 2)
+                r, c = rng.randint(2, world_size - 2, 2)
             test_bugs.append(Bug([r, c], pool[i], seed=42, learn_flags=nolearn, stable=True,
-                                 patchy=False))
+                                 patchy=False, world_size=world_size))
         tw.bugs = test_bugs
         cue_arr = np.array(tw.cue_positions)
         total_d = 0.0
@@ -495,25 +514,25 @@ def evolve(n_gens=10, steps_per_gen=3000, n_bugs=20, seed=42, n_cues=2,
                     n += 1
                 else:
                     bug.energy = 0.8
-                    bug.pos = np.array([rng.randint(2, 13), rng.randint(2, 13)], dtype=int)
+                    bug.pos = np.array([rng.randint(2, world_size - 2), rng.randint(2, world_size - 2)], dtype=int)
                     bug.alive = True
         return total_d / max(1, n)
 
     for gen in range(n_gens):
         wseed = seed if env_pool is None else seed + gen * 7
-        world = World(size=15, n_food=10, n_walls=3, n_cues=n_cues, seed=wseed)
-        world.food_count = np.zeros((15, 15), dtype=np.int32)
-        place_stable(world, rng, corner='tl', n_cues=n_cues, n_food=10)
+        world = World(size=world_size, n_food=n_food, n_walls=3, n_cues=n_cues, seed=wseed)
+        world.food_count = np.zeros((world_size, world_size), dtype=np.int32)
+        place_stable(world, rng, corner='tl', n_cues=n_cues, n_food=n_food)
 
         bugs = []
         for i in range(n_bugs):
-            r, c = rng.randint(2, 13, 2)
+            r, c = rng.randint(2, world_size - 2, 2)
             while world.grid[r, c] != World.EMPTY:
-                r, c = rng.randint(2, 13, 2)
+                r, c = rng.randint(2, world_size - 2, 2)
             g = pool[i]
             bugs.append(Bug([r, c], g, seed=42, learn_flags=learn, stable=True,
                             env_gain=g.get('env_gain', 1.0), env_decay=g.get('env_decay', 0.999),
-                            patchy=False))
+                            patchy=False, world_size=world_size))
         world.bugs = bugs
 
         for step in range(steps_per_gen):
@@ -548,19 +567,30 @@ def evolve(n_gens=10, steps_per_gen=3000, n_bugs=20, seed=42, n_cues=2,
 if __name__ == '__main__':
     import sys
     if '--evolve' in sys.argv:
-        print("===== Baldwin效应 v2：产区偏好跨代固化（12代×20虫）=====\n")
+        print("===== Baldwin效应：产区偏好跨代固化（15×15 12代×20虫）=====\n")
         print("稳定环境（产区固定左上）:")
         stable = evolve(n_gens=12, env_pool=None)
         print("\n环境每代打乱（对照组）:")
         shuffle = evolve(n_gens=12, env_pool='shuffle')
 
+        print("\n===== 大世界 Baldwin：30×30（12代×16虫，n_food=16, n_cues=2）=====\n")
+        print("稳定环境:")
+        big_stable = evolve(n_gens=12, n_bugs=16, steps_per_gen=1500, test_steps=1500,
+                            env_pool=None, world_size=30, n_food=16)
+        print("\n环境每代打乱:")
+        big_shuffle = evolve(n_gens=12, n_bugs=16, steps_per_gen=1500, test_steps=1500,
+                             env_pool='shuffle', world_size=30, n_food=16)
+
         import matplotlib.pyplot as plt
-        plt.figure(figsize=(7, 4.5))
-        plt.plot(range(12), stable, 'o-', label='环境稳定（固化组）', color='#f72585', linewidth=2)
-        plt.plot(range(12), shuffle, 's--', label='环境每代打乱（对照）', color='#adb5bd', linewidth=2)
-        plt.xlabel('世代'); plt.ylabel('出生测试：平均距产区距离')
-        plt.title('固化证据：距产区距离随世代下降 = 基因学会去产区')
-        plt.legend()
+        fig, axes = plt.subplots(1, 2, figsize=(13, 4.5))
+        axes[0].plot(range(12), stable, 'o-', label='15×15 稳定', color='#f72585', linewidth=2)
+        axes[0].plot(range(12), shuffle, 's--', label='15×15 打乱', color='#adb5bd', linewidth=2)
+        axes[0].set_xlabel('世代'); axes[0].set_ylabel('出生距产区（15×15 尺度）')
+        axes[0].set_title('15×15 固化趋势'); axes[0].legend()
+        axes[1].plot(range(12), big_stable, 'o-', label='30×30 稳定', color='#f72585', linewidth=2)
+        axes[1].plot(range(12), big_shuffle, 's--', label='30×30 打乱', color='#adb5bd', linewidth=2)
+        axes[1].set_xlabel('世代'); axes[1].set_ylabel('出生距产区（30×30 尺度）')
+        axes[1].set_title('30×30 大世界固化（距离尺度更大=更敏感）'); axes[1].legend()
         plt.tight_layout()
         plt.savefig('multi_bug_evolve_result.png', dpi=110)
         print("\n图表已保存: multi_bug_evolve_result.png")
