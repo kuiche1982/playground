@@ -99,8 +99,10 @@ class EnvHebbian:
     def __init__(self, size=15, decay=0.999, gain=1.0):
         self.size = size
         self.density = np.zeros((size, size), dtype=np.float32)
-        self.decay = decay      # 环境跟踪速度（基因可调）
-        self.gain = gain        # 环境偏置强度（基因可调）
+        # 基因经多代 ×0.9~1.1 突变会漂移到 >1：decay>1 时 density *= decay 指数爆炸（overflow）
+        # → clamp 到合法区间（保留比例 0.9~1.0）；gain 同理防止 bias 放大溢出
+        self.decay = min(1.0, max(0.9, decay))
+        self.gain = min(5.0, max(0.1, gain))
 
     def observe(self, pos, smell, vision):
         """方向性写入：smell[i] 表示 i 方向有食物 → density 累加到该方向 2-3 格"""
@@ -717,6 +719,73 @@ if __name__ == '__main__':
             es = np.array([r['explore_std'] for r in runs[m]])[:,-1]
             print(f"  {m:10s}: 距产区 {b.mean():.2f} | 出生食物 {f.mean():.1f} | explore {e.mean():.3f} (std {es.mean():.3f})")
         print("图表已保存: multi_bug_selstrat_result.png")
+        sys.exit(0)
+    if '--bigtour' in sys.argv:
+        # 实验8：锦标赛 × 升级规模 坐实Baldwin（断点续跑版）
+        # 4d/4e/4f共同结论：种群20-32+世代12-15太小，遗传漂变主导 → 必须 50-100虫×30-50代×多seed
+        # 4g结论：锦标赛=生存门槛+随机性双赢 → 本实验用 tournament 繁殖
+        # 环境会无声回收后台进程 → 每个 run 单独落盘，重启自动跳过已完成（bigtour_runs/*.json）
+        import json, os
+        print("===== 锦标赛×升级规模：50虫×30代×3seeds（稳定 vs 打乱）=====\n")
+        seeds = [42, 43, 44]
+        os.makedirs('bigtour_runs', exist_ok=True)
+        def load_run(path):
+            if os.path.exists(path):
+                with open(path) as f:
+                    return {k: np.array(v) for k, v in json.load(f).items()}
+            return None
+        def save_run(path, r):
+            with open(path, 'w') as f:
+                json.dump({k: np.asarray(v).tolist() for k, v in r.items()}, f)
+        st_runs, sh_runs = [], []
+        for s in seeds:
+            for tag, env in [('stable', None), ('shuffle', 'shuffle')]:
+                path = f'bigtour_runs/seed{s}_{tag}.json'
+                r = load_run(path)
+                if r is None:
+                    print(f"\n--- seed {s} {tag}环境 ---")
+                    r = evolve(n_gens=30, n_bugs=50, seed=s, steps_per_gen=1500,
+                               test_steps=1200, env_pool=env, n_food=16, sel_mode='tournament')
+                    save_run(path, r)
+                else:
+                    print(f"\n--- seed {s} {tag}环境: 已存在，跳过 ---")
+                (st_runs if tag == 'stable' else sh_runs).append(r)
+
+        import matplotlib.pyplot as plt
+        st_b = np.array([r['birth'] for r in st_runs])
+        sh_b = np.array([r['birth'] for r in sh_runs])
+        st_f = np.array([r['birth_food'] for r in st_runs])
+        sh_f = np.array([r['birth_food'] for r in sh_runs])
+        st_e = np.array([r['explore'] for r in st_runs])
+        sh_e = np.array([r['explore'] for r in sh_runs])
+        st_es = np.array([r['explore_std'] for r in st_runs])
+        sh_es = np.array([r['explore_std'] for r in sh_runs])
+        x = range(30)
+        fig, axes = plt.subplots(1, 4, figsize=(19, 4.2))
+        axes[0].errorbar(x, st_b.mean(0), yerr=st_b.std(0), fmt='o-', label='稳定', color='#f72585', capsize=3)
+        axes[0].errorbar(x, sh_b.mean(0), yerr=sh_b.std(0), fmt='s--', label='打乱', color='#adb5bd', capsize=3)
+        axes[0].set_xlabel('世代'); axes[0].set_ylabel('出生距产区')
+        axes[0].set_title('固化趋势（距产区）'); axes[0].legend()
+        axes[1].errorbar(x, st_f.mean(0), yerr=st_f.std(0), fmt='o-', label='稳定', color='#f72585', capsize=3)
+        axes[1].errorbar(x, sh_f.mean(0), yerr=sh_f.std(0), fmt='s--', label='打乱', color='#adb5bd', capsize=3)
+        axes[1].set_xlabel('世代'); axes[1].set_ylabel('出生测试食物数')
+        axes[1].set_title('固化信号正确性'); axes[1].legend()
+        axes[2].errorbar(x, st_e.mean(0), yerr=st_e.std(0), fmt='o-', label='稳定', color='#f72585', capsize=3)
+        axes[2].errorbar(x, sh_e.mean(0), yerr=sh_e.std(0), fmt='s--', label='打乱', color='#adb5bd', capsize=3)
+        axes[2].set_xlabel('世代'); axes[2].set_ylabel('explore 基因')
+        axes[2].set_title('探索基因演化'); axes[2].legend()
+        axes[3].errorbar(x, st_es.mean(0), yerr=st_es.std(0), fmt='o-', label='稳定', color='#f72585', capsize=3)
+        axes[3].errorbar(x, sh_es.mean(0), yerr=sh_es.std(0), fmt='s--', label='打乱', color='#adb5bd', capsize=3)
+        axes[3].set_xlabel('世代'); axes[3].set_ylabel('explore 标准差')
+        axes[3].set_title('基因多样性'); axes[3].legend()
+        plt.tight_layout()
+        plt.savefig('multi_bug_bigtour_result.png', dpi=110)
+        print(f"\n终点（G29）稳定 vs 打乱: 距产区 {st_b[:,-1].mean():.2f}±{st_b[:,-1].std():.2f} vs "
+              f"{sh_b[:,-1].mean():.2f}±{sh_b[:,-1].std():.2f} | "
+              f"出生食物 {st_f[:,-1].mean():.1f} vs {sh_f[:,-1].mean():.1f} | "
+              f"explore {st_e[:,-1].mean():.3f} vs {sh_e[:,-1].mean():.3f} | "
+              f"explore_std {st_es[:,-1].mean():.3f} vs {sh_es[:,-1].mean():.3f}")
+        print("图表已保存: multi_bug_bigtour_result.png")
         sys.exit(0)
     if '--bigpop' in sys.argv:
         # 升级规模 + 固化信号正确性诊断
