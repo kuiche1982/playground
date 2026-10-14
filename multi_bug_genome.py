@@ -59,8 +59,9 @@ def see_at(world, pos):
 QUADRANT_WEIGHTS = [0.45, 0.20, 0.20, 0.15]
 
 def respawn_food_patchy(world):
+    weights = getattr(world, 'weights', QUADRANT_WEIGHTS)
     for _ in range(200):
-        q = np.random.choice(4, p=QUADRANT_WEIGHTS)
+        q = np.random.choice(4, p=weights)
         half = world.size // 2
         if q == 0:
             r, c = np.random.randint(1, half), np.random.randint(1, half)
@@ -83,11 +84,91 @@ def respawn_food_uniform(world):
             return
 
 
+class EnvHebbian:
+    """环境持续学习网络：无监督Hebbian，不依赖奖惩
+    只跟踪"哪里出现食物线索"，decay 让旧统计淡出 → 环境变了自动跟上
+    区别于 hip（吃到才记录的事件记忆）：EnvHebbian 每步感知即学"""
+    def __init__(self, size=15, decay=0.999, gain=1.0):
+        self.density = np.zeros((size, size), dtype=np.float32)
+        self.decay = decay      # 环境跟踪速度（基因可调）
+        self.gain = gain        # 环境偏置强度（基因可调）
+
+    def observe(self, pos, smell, vision):
+        """无监督：闻到/看到食物线索 → 当前位置附近食物概率+1；全局衰减"""
+        has_food_cue = smell.max() > 0 or vision[[3, 7, 11, 15]].max() > 0
+        if has_food_cue:
+            r, c = int(pos[0]), int(pos[1])
+            self.density[r, c] = min(5.0, self.density[r, c] + 1.0)
+        self.density *= self.decay
+
+    def bias(self, pos):
+        """输出4维方向偏置：哪边环境食物密度高"""
+        bias = np.zeros(4, dtype=np.float32)
+        r, c = int(pos[0]), int(pos[1])
+        for i, (dr, dc) in enumerate(World.ACTIONS):
+            for dist in [1, 2, 3]:
+                nr, nc = r + dr * dist, c + dc * dist
+                if 0 <= nr < 15 and 0 <= nc < 15:
+                    bias[i] += self.density[nr, nc] * (1.0 / dist)
+        return bias * self.gain
+
+
+def place_stable(world, rng, corner='tl', n_cues=6, n_food=10):
+    """在指定角落放 cue + 附近食物（稳定环境结构，产区搬家用）
+    稀疏 cue：间距 ≥4，避免食物工厂"""
+    world.grid[world.grid == world.FOOD] = world.EMPTY
+    world.grid[world.grid == world.CUE] = world.EMPTY
+    world.cue_positions = []
+    if corner == 'tl':
+        lo, hi = 2, 7
+    else:  # br
+        lo, hi = 8, 13
+    placed = 0
+    while placed < n_cues:
+        r, c = rng.randint(lo, hi, 2)
+        if world.grid[r, c] != world.EMPTY:
+            continue
+        # 与已有 cue 保持间距
+        if any(abs(r - cr) + abs(c - cc) < 4 for cr, cc in world.cue_positions):
+            continue
+        world.grid[r, c] = world.CUE
+        world.cue_positions.append((r, c))
+        placed += 1
+    nf = 0
+    for cr, cc in world.cue_positions:
+        if nf >= n_food:
+            break
+        for _ in range(20):
+            dr, dc = world.ACTIONS[rng.randint(4)]
+            r, c = cr + dr * 2, cc + dc * 2
+            if 0 <= r < world.size and 0 <= c < world.size and world.grid[r, c] == world.EMPTY:
+                world.grid[r, c] = world.FOOD
+                nf += 1
+                break
+
+
+def safe_respawn(world):
+    """cue 绑定 respawn，但新食物必须离所有虫子 ≥2 格（避免原地无限刷）"""
+    bugs = getattr(world, 'bugs', [])
+    for _ in range(300):
+        if world.cue_positions:
+            cr, cc = world.cue_positions[np.random.randint(len(world.cue_positions))]
+            dr, dc = world.ACTIONS[np.random.randint(4)]
+            nr, nc = cr + dr * 2, cc + dc * 2
+        else:
+            nr, nc = np.random.randint(1, world.size - 1, 2)
+        if 0 <= nr < world.size and 0 <= nc < world.size and world.grid[nr, nc] == world.EMPTY:
+            if all(abs(b.pos[0] - nr) + abs(b.pos[1] - nc) >= 2 for b in bugs):
+                world.grid[nr, nc] = world.FOOD
+                return
+
+
 class Bug:
     """一只虫子：共享权重出生，基因决定学习规则和硬件，经历改写权重"""
 
     def __init__(self, pos, genome, ckpt='checkpoints', seed=42, learn_flags=None, shared=None,
-                 energy_cost_base=0.002, patchy=False):
+                 energy_cost_base=0.002, patchy=False, env_gain=None, env_decay=None,
+                 stable=False):
         self.pos = np.array(pos, dtype=int)
         self.energy = 0.8
         self.alive = True
@@ -96,6 +177,7 @@ class Bug:
         self.actions = []
         self.energy_cost_base = energy_cost_base
         self.patchy = patchy
+        self.stable = stable
         # 学习组件开关（诊断用）
         self.lf = learn_flags or {'mb': True, 'hip': True, 'fm': True, 'pfc': True, 'ctx': True}
 
@@ -107,6 +189,11 @@ class Bug:
         self.smell_sens = g.get('smell_sens', 1.0)     # 嗅觉硬件灵敏度（感知输入层）
         self.energy_cost = g.get('energy_cost', 1.0)   # 代谢率
         self.explore_noise = g.get('explore_noise', 0.2)
+        # 环境持续学习网络（独立Hebbian，不吃奖惩；由 lf['env'] 控制开关）
+        self.env = (EnvHebbian(size=15,
+                               decay=env_decay if env_decay is not None else g.get('env_decay', 0.999),
+                               gain=env_gain if env_gain is not None else g.get('env_gain', 1.0))
+                    if self.lf.get('env', False) else None)
 
         if shared is not None:
             # 诊断模式：10 虫共享同一套大脑对象（复现 v1 行为）
@@ -155,9 +242,10 @@ class Bug:
         smell_weight = 1.0 * (1.0 - inhibit)      # 基因不再直接乘决策公式
         habit_weight = 1.0 * (1.0 - inhibit)
         ctx_bias = self.ctx.get_gain(ctx_gain)
+        env_bias = self.env.bias(self.pos) if self.env else np.zeros(4, dtype=np.float32)
         total = (smell * smell_weight + habit * habit_weight
                  + spatial * 0.5 + imagined * 0.8
-                 + pfc_bias * 0.5 + ctx_bias)
+                 + pfc_bias * 0.5 + ctx_bias + env_bias)
         noise = np.random.randn(4) * self.explore_noise
         action = int(np.argmax(total + noise))
         self.actions.append(action)
@@ -174,11 +262,18 @@ class Bug:
                 self.energy = min(1.0, self.energy + 0.3)
                 ate = True
                 # 食物补充（v1 有、v2 重构时漏掉的 respawn！）
-                (respawn_food_patchy if self.patchy else respawn_food_uniform)(world)
+                if self.stable:
+                    safe_respawn(world)      # 绑定 cue + 防原地刷
+                elif self.patchy:
+                    respawn_food_patchy(world)
+                else:
+                    respawn_food_uniform(world)
         else:
             bumped = True
 
         # ---- 学习（经历改写权重）----
+        if self.env is not None:
+            self.env.observe(self.pos, smell, vision)   # 环境网络每步无监督学习（不吃奖惩）
         if self.lf['mb']:
             self.mb.update_trace(active_kc, action)
         # 多虫竞争下每虫正样本稀疏，训练好的空间记忆不能被 decay 抹光
@@ -219,14 +314,18 @@ def make_genome(rng, scale=1.0):
         'smell_sens': rng.uniform(1.0 - 0.7 * scale, 1.0 + 1.0 * scale),  # 鼻子灵/钝
         'energy_cost': rng.uniform(1.0 - 0.3 * scale, 1.0 + 0.5 * scale),  # 代谢低/高
         'explore_noise': rng.uniform(0.05 * scale, 0.2 + 0.3 * scale),  # 探索/保守
+        'env_decay': rng.uniform(0.997, 0.9999),   # 环境跟踪速度（快=易适应变化/易被噪声骗）
+        'env_gain': rng.uniform(0.5, 2.0),         # 环境偏置强度（敏感/迟钝）
     }
 
 
 def run_group(name, use_genes, patchy, n_bugs=10, steps=6000, seed=42, learn_flags=None,
-              share_brain=False, n_food=10, energy_cost_base=0.002, gene_scale=1.0):
+              share_brain=False, n_food=10, energy_cost_base=0.002, gene_scale=1.0,
+              flip_at=None, env_gain=None, env_decay=None, stable=False, n_cues=6):
     rng = np.random.RandomState(seed)
     world = World(size=15, n_food=n_food, n_walls=3, n_cues=6, seed=seed)
     if patchy:
+        world.weights = QUADRANT_WEIGHTS.copy()
         world.grid = np.full((15, 15), World.EMPTY, dtype=int)
         world._place_walls(3)
         for _ in range(n_food):
@@ -246,18 +345,35 @@ def run_group(name, use_genes, patchy, n_bugs=10, steps=6000, seed=42, learn_fla
         ctx_s = ContextModulator(n_input=4, n_output=4, lr=0.06, seed=seed)
         shared = (mb_s, hip_s, fm_s, pfc_s, ctx_s)
 
+    # 稳定结构：初始用稀疏 cue 产区（左上）
+    if stable:
+        place_stable(world, rng, corner='tl', n_cues=n_cues, n_food=n_food)
+
     for i in range(n_bugs):
         r, c = rng.randint(2, 13, 2)
         while world.grid[r, c] != World.EMPTY:
             r, c = rng.randint(2, 13, 2)
         genome = make_genome(rng, gene_scale) if use_genes else {}
         bugs.append(Bug([r, c], genome, seed=42, learn_flags=learn_flags, shared=shared,
-                        energy_cost_base=energy_cost_base, patchy=patchy))
+                        energy_cost_base=energy_cost_base, patchy=patchy,
+                        env_gain=env_gain, env_decay=env_decay, stable=stable))
+    world.bugs = bugs   # 供 safe_respawn 检查距离
 
     pair_dists = []
     total_deaths = 0
+    flip_mark = None
 
     for step in range(steps):
+        if flip_at is not None and step == flip_at:
+            # 环境突变：食物产区从左上迁移到右下
+            if stable:
+                place_stable(world, rng, corner='br', n_cues=n_cues, n_food=n_food)
+            else:
+                world.weights = [0.15, 0.20, 0.20, 0.45]
+                world.grid[world.grid == world.FOOD] = world.EMPTY
+                for _ in range(n_food):
+                    respawn_food_patchy(world)
+            flip_mark = {id(b): b.foods for b in bugs}
         for bug in bugs:
             if bug.alive:
                 bug.decide_and_learn(world)
@@ -281,17 +397,133 @@ def run_group(name, use_genes, patchy, n_bugs=10, steps=6000, seed=42, learn_fla
             p = hist / hist.sum()
             ents.append(-(p * np.log(p + 1e-9)).sum())
     drifts = np.array([b.drift() for b in bugs])
-    return {
+    post_flip = None
+    if flip_mark is not None:
+        post_flip = np.array([b.foods - flip_mark[id(b)] for b in bugs])
+    result = {
         'name': name, 'foods': foods, 'foods_mean': foods.mean(), 'foods_std': foods.std(),
         'gini': gini, 'pair_dist_mean': np.mean(pair_dists[-20:]),
         'entropy_mean': np.mean(ents), 'deaths': total_deaths,
         'drift_mean': drifts.mean(), 'drift_std': drifts.std(), 'drifts': drifts,
         'pair_dists': pair_dists,
+        'post_flip': post_flip,
     }
+    return result
 
 
 if __name__ == '__main__':
     import sys
+    if '--stableenv' in sys.argv:
+        # 稳定结构环境（食物固定 cue 附近）验证：
+        # 环境有可学结构 → env 网络才有预测价值；产区迁移 → 验证跟随能力
+        print("===== 稳定结构环境：env网络价值 + 产区迁移跟随（5000步，cue绑定食物）=====\n")
+        base_learn = {'mb': True, 'hip': True, 'fm': True, 'pfc': True, 'ctx': True}
+        env_learn = dict(base_learn); env_learn['env'] = True
+
+        r1 = run_group('无env 稳定环境', use_genes=False, patchy=False,
+                       learn_flags=base_learn, steps=5000, stable=True, n_cues=2)
+        r2 = run_group('env(g0.3) 稳定环境', use_genes=False, patchy=False,
+                       learn_flags=env_learn, steps=5000, stable=True,
+                       env_gain=0.3, env_decay=0.995, n_cues=2)
+        r3 = run_group('无env 稳定+产区迁移', use_genes=False, patchy=False,
+                       learn_flags=base_learn, steps=5000, stable=True, flip_at=2500, n_cues=2)
+        r4 = run_group('env(g0.3) 稳定+产区迁移', use_genes=False, patchy=False,
+                       learn_flags=env_learn, steps=5000, stable=True, flip_at=2500,
+                       env_gain=0.3, env_decay=0.995, n_cues=2)
+
+        print(f"{'组':<22} {'食物均值':>7} {'食物std':>7} {'漂移std':>7} {'熵':>5} {'迁移后食物':>8}")
+        for r in [r1, r2, r3, r4]:
+            pf = f"{r['post_flip'].mean():>8.1f}" if r['post_flip'] is not None else f"{'-':>8}"
+            print(f"{r['name']:<22} {r['foods_mean']:>7.1f} {r['foods_std']:>7.1f} {r['drift_std']:>7.2f} "
+                  f"{r['entropy_mean']:>5.2f} {pf}")
+
+        fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+        rr = [r1, r2, r3, r4]
+        names = ['无env', 'env0.3', '无env+迁移', 'env0.3+迁移']
+        colors = ['#adb5bd', '#4cc9f0', '#adb5bd', '#f72585']
+        axes[0].bar(range(4), [r['foods_mean'] for r in rr], color=colors)
+        axes[0].set_xticks(range(4)); axes[0].set_xticklabels(names, fontsize=9)
+        axes[0].set_title('食物均值'); axes[0].set_ylabel('foods')
+        pf_vals = [r['post_flip'].mean() if r['post_flip'] is not None else 0 for r in rr]
+        axes[1].bar(range(4), pf_vals, color=colors)
+        axes[1].set_xticks(range(4)); axes[1].set_xticklabels(names, fontsize=9)
+        axes[1].set_title('产区迁移后2500步食物获取（越大=越能跟上）')
+        axes[1].set_ylabel('post-flip foods')
+        plt.tight_layout()
+        plt.savefig('multi_bug_stableenv_result.png', dpi=110)
+        print("\n图表已保存: multi_bug_stableenv_result.png")
+        sys.exit(0)
+
+    if '--envsens' in sys.argv:
+        # env 网络 gain×decay 敏感性：找 env 不拖累主网络的工作点
+        # 环境场景改为"稳定结构"：食物固定在 cue 附近（结构稳定，环境模型才有预测价值）
+        print("===== env网络 gain×decay 敏感性（3000步，斑块环境）=====\n")
+        base_learn = {'mb': True, 'hip': True, 'fm': True, 'pfc': True, 'ctx': True}
+        import multi_bug_genome as M
+
+        # 用固定基因（只有 env 参数变化）跑
+        def run_with_env(gain, decay):
+            lf = dict(base_learn); lf['env'] = True
+            return run_group(f'env g{gain} d{decay}', use_genes=False, patchy=True,
+                             learn_flags=lf, steps=3000, env_gain=gain, env_decay=decay)
+
+        rows = []
+        for gain in [0.2, 0.5, 1.0]:
+            for decay in [0.99, 0.999]:
+                r = run_with_env(gain, decay)
+                rows.append((gain, decay, r))
+        print(f"{'gain':>5} {'decay':>6} {'食物均值':>7} {'食物std':>7} {'熵':>5}")
+        for gain, decay, r in rows:
+            print(f"{gain:>5.1f} {decay:>6.3f} {r['foods_mean']:>7.1f} {r['foods_std']:>7.1f} {r['entropy_mean']:>5.2f}")
+        sys.exit(0)
+
+    if '--env' in sys.argv:
+        # 环境持续学习网络验证：
+        # 组1: 无env网络（对照，环境突变后靠老记忆/碰运气）
+        # 组2: +env网络，主网络不学（环境网络独立持续学习，验证用户假设）
+        # 组3: +env网络 + 主网络学习（双通道）
+        # 组4: 组3 + 环境中途突变（2500步食物从左上搬到右下）→ 跟随能力
+        print("===== 环境持续学习网络验证（5000步，10虫/组，斑块环境）=====\n")
+        base_learn = {'mb': True, 'hip': True, 'fm': True, 'pfc': True, 'ctx': True}
+        env_only = {'mb': False, 'hip': False, 'fm': False, 'pfc': False, 'ctx': False, 'env': True}
+        env_learn = {'mb': True, 'hip': True, 'fm': True, 'pfc': True, 'ctx': True, 'env': True}
+
+        r1 = run_group('无env网络 主网络学', use_genes=False, patchy=True,
+                       learn_flags=base_learn, steps=5000)
+        r2 = run_group('env网络 主网络不学', use_genes=False, patchy=True,
+                       learn_flags=env_only, steps=5000)
+        r3 = run_group('env网络 主网络学', use_genes=False, patchy=True,
+                       learn_flags=env_learn, steps=5000)
+        r5 = run_group('无env网络 主网络学+突变', use_genes=False, patchy=True,
+                       learn_flags=base_learn, steps=5000, flip_at=2500)
+        r4 = run_group('env网络 主网络学+突变', use_genes=False, patchy=True,
+                       learn_flags=env_learn, steps=5000, flip_at=2500)
+
+        print(f"{'组':<24} {'食物均值':>7} {'食物std':>7} {'漂移std':>7} {'熵':>5} {'突变后食物':>8}")
+        for r in [r1, r2, r3, r5, r4]:
+            pf = f"{r['post_flip'].mean():>8.1f}" if r['post_flip'] is not None else f"{'-':>8}"
+            print(f"{r['name']:<24} {r['foods_mean']:>7.1f} {r['foods_std']:>7.1f} {r['drift_std']:>7.2f} "
+                  f"{r['entropy_mean']:>5.2f} {pf}")
+
+        # 可视化
+        fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+        rr = [r1, r2, r3, r5, r4]
+        names = [r['name'].split(' ')[0] + ('+突' if '突变' in r['name'] else '')
+                 + ('+env' if 'env网络' in r['name'] else '') for r in rr]
+        axes[0].bar(range(5), [r['foods_mean'] for r in rr],
+                    color=['#adb5bd', '#4cc9f0', '#4895ef', '#adb5bd', '#f72585'])
+        axes[0].set_xticks(range(5)); axes[0].set_xticklabels(names, fontsize=8)
+        axes[0].set_title('食物均值（吃得多=环境感知好）'); axes[0].set_ylabel('foods')
+        pf_vals = [r['post_flip'].mean() if r['post_flip'] is not None else 0 for r in rr]
+        axes[1].bar(range(5), pf_vals, color=['#adb5bd', '#4cc9f0', '#4895ef', '#adb5bd', '#f72585'])
+        axes[1].set_xticks(range(5)); axes[1].set_xticklabels(names, fontsize=8)
+        axes[1].set_title('环境中途突变后2500步食物获取（越大=越能跟上环境变化）')
+        axes[1].set_ylabel('post-flip foods')
+        plt.tight_layout()
+        plt.savefig('multi_bug_env_result.png', dpi=110)
+        print("\n图表已保存: multi_bug_env_result.png")
+        sys.exit(0)
+
     if '--scan' in sys.argv:
         # 三因素扫描：基因强度 × 环境异质性 × 学习（经历写入）
         # 学习关 = 纯环境直接作用；学习开 = 经历累积（环境通过行为进入大脑）
