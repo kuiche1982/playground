@@ -183,6 +183,7 @@ class Bug:
 
         # ---- 基因（出生固定，不随经历改变）----
         g = genome
+        self.genes = g
         self.lr_gain = g.get('lr_gain', 1.0)           # 学习速率乘子
         self.trace_gain = g.get('trace_gain', 1.0)     # 记忆痕迹衰减乘子
         self.da_gain = g.get('da_gain', 1.0)           # 多巴胺敏感度
@@ -411,8 +412,110 @@ def run_group(name, use_genes, patchy, n_bugs=10, steps=6000, seed=42, learn_fla
     return result
 
 
+def evolve(n_gens=10, steps_per_gen=3000, n_bugs=20, seed=42, n_cues=2,
+           test_steps=2000, env_pool=None, top_k=8):
+    """Baldwin效应验证 v2：固化指标 = 出生测试时到产区的平均距离
+    新生儿不学习 → 若环境适应已固化进基因，出生就有"去产区"的空间偏好
+    env_pool: None=跨代稳定；'shuffle'=每代换布局（对照组）"""
+    rng = np.random.RandomState(seed)
+    pool = [make_genome(rng, 1.0) for _ in range(n_bugs)]
+    birth_dist = []   # 出生测试：平均距产区距离（越小=固化越深）
+    learn = {'mb': True, 'hip': True, 'fm': True, 'pfc': True, 'ctx': True, 'env': True}
+    nolearn = {'mb': False, 'hip': False, 'fm': False, 'pfc': False, 'ctx': False, 'env': False}
+
+    def birth_test(pool, wseed):
+        """新生儿纯基因测试：不学习，测平均距产区距离"""
+        tw = World(size=15, n_food=10, n_walls=3, n_cues=n_cues, seed=wseed)
+        place_stable(tw, rng, corner='tl', n_cues=n_cues, n_food=10)
+        test_bugs = []
+        for i in range(n_bugs):
+            r, c = rng.randint(2, 13, 2)
+            while tw.grid[r, c] != World.EMPTY:
+                r, c = rng.randint(2, 13, 2)
+            test_bugs.append(Bug([r, c], pool[i], seed=42, learn_flags=nolearn, stable=True,
+                                 patchy=False))
+        tw.bugs = test_bugs
+        cue_arr = np.array(tw.cue_positions)
+        total_d = 0.0
+        n = 0
+        for step in range(test_steps):
+            for bug in test_bugs:
+                if bug.alive:
+                    bug.decide_and_learn(tw)
+                    d = np.abs(cue_arr - bug.pos).sum(axis=1).min()
+                    total_d += d
+                    n += 1
+                else:
+                    bug.energy = 0.8
+                    bug.pos = np.array([rng.randint(2, 13), rng.randint(2, 13)], dtype=int)
+                    bug.alive = True
+        return total_d / max(1, n)
+
+    for gen in range(n_gens):
+        wseed = seed if env_pool is None else seed + gen * 7
+        world = World(size=15, n_food=10, n_walls=3, n_cues=n_cues, seed=wseed)
+        place_stable(world, rng, corner='tl', n_cues=n_cues, n_food=10)
+
+        bugs = []
+        for i in range(n_bugs):
+            r, c = rng.randint(2, 13, 2)
+            while world.grid[r, c] != World.EMPTY:
+                r, c = rng.randint(2, 13, 2)
+            g = pool[i]
+            bugs.append(Bug([r, c], g, seed=42, learn_flags=learn, stable=True,
+                            env_gain=g.get('env_gain', 1.0), env_decay=g.get('env_decay', 0.999),
+                            patchy=False))
+        world.bugs = bugs
+
+        for step in range(steps_per_gen):
+            for bug in bugs:
+                if bug.alive:
+                    bug.decide_and_learn(world)
+                else:
+                    bug.energy = 0.8
+                    bug.pos = np.array([rng.randint(2, 13), rng.randint(2, 13)], dtype=int)
+                    bug.alive = True
+
+        # 繁殖：Top-k 轮转复制 + 高斯突变，填满种群
+        ranked = sorted(bugs, key=lambda b: b.foods, reverse=True)
+        new_pool = []
+        while len(new_pool) < n_bugs:
+            parent = ranked[len(new_pool) % top_k]
+            child = {k: v * float(rng.uniform(0.9, 1.1)) for k, v in parent.genes.items()}
+            new_pool.append(child)
+        pool = new_pool
+
+        d = birth_test(pool, wseed)
+        birth_dist.append(d)
+        gen_foods = np.array([b.foods for b in bugs])
+        print(f"G{gen}: 学习期食物 {gen_foods.mean():.1f}±{gen_foods.std():.1f} | "
+              f"出生距产区 {d:.2f} | "
+              f"smell {np.mean([p['smell_sens'] for p in pool]):.2f} "
+              f"explore {np.mean([p['explore_noise'] for p in pool]):.2f}")
+
+    return birth_dist
+
+
 if __name__ == '__main__':
     import sys
+    if '--evolve' in sys.argv:
+        print("===== Baldwin效应 v2：产区偏好跨代固化（12代×20虫）=====\n")
+        print("稳定环境（产区固定左上）:")
+        stable = evolve(n_gens=12, env_pool=None)
+        print("\n环境每代打乱（对照组）:")
+        shuffle = evolve(n_gens=12, env_pool='shuffle')
+
+        import matplotlib.pyplot as plt
+        plt.figure(figsize=(7, 4.5))
+        plt.plot(range(12), stable, 'o-', label='环境稳定（固化组）', color='#f72585', linewidth=2)
+        plt.plot(range(12), shuffle, 's--', label='环境每代打乱（对照）', color='#adb5bd', linewidth=2)
+        plt.xlabel('世代'); plt.ylabel('出生测试：平均距产区距离')
+        plt.title('固化证据：距产区距离随世代下降 = 基因学会去产区')
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig('multi_bug_evolve_result.png', dpi=110)
+        print("\n图表已保存: multi_bug_evolve_result.png")
+        sys.exit(0)
     if '--stableenv' in sys.argv:
         # 稳定结构环境（食物固定 cue 附近）验证：
         # 环境有可学结构 → env 网络才有预测价值；产区迁移 → 验证跟随能力

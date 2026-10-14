@@ -160,6 +160,10 @@ run(n_steps=5000,
 - **L5扩展**：多步想象（试3步不是1步）
 - **L6扩展**：更多词、更复杂指令（"去左边那个食物"）
 
+## 多虫个体分化实验
+
+共享大脑的虫子如何长出不同个体（基因×经历×环境 + 跨代固化）：见 [docs/multi_bug_experiments.md](docs/multi_bug_experiments.md)
+
 ## 架构图
 
 见 [docs/architecture.html](docs/architecture.html)
