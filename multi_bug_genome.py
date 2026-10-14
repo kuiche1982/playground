@@ -89,6 +89,7 @@ class EnvHebbian:
     只跟踪"哪里出现食物线索"，decay 让旧统计淡出 → 环境变了自动跟上
     区别于 hip（吃到才记录的事件记忆）：EnvHebbian 每步感知即学"""
     def __init__(self, size=15, decay=0.999, gain=1.0):
+        self.size = size
         self.density = np.zeros((size, size), dtype=np.float32)
         self.decay = decay      # 环境跟踪速度（基因可调）
         self.gain = gain        # 环境偏置强度（基因可调）
@@ -108,21 +109,21 @@ class EnvHebbian:
         for i, (dr, dc) in enumerate(World.ACTIONS):
             for dist in [1, 2, 3]:
                 nr, nc = r + dr * dist, c + dc * dist
-                if 0 <= nr < 15 and 0 <= nc < 15:
+                if 0 <= nr < self.size and 0 <= nc < self.size:
                     bias[i] += self.density[nr, nc] * (1.0 / dist)
         return bias * self.gain
 
 
 def place_stable(world, rng, corner='tl', n_cues=6, n_food=10):
     """在指定角落放 cue + 附近食物（稳定环境结构，产区搬家用）
-    稀疏 cue：间距 ≥4，避免食物工厂"""
+    稀疏 cue：间距 ≥4，避免食物工厂；角落范围随 world.size 缩放"""
     world.grid[world.grid == world.FOOD] = world.EMPTY
     world.grid[world.grid == world.CUE] = world.EMPTY
     world.cue_positions = []
     if corner == 'tl':
-        lo, hi = 2, 7
+        lo, hi = 2, max(7, int(world.size * 0.45))
     else:  # br
-        lo, hi = 8, 13
+        lo, hi = int(world.size * 0.55), world.size - 2
     placed = 0
     while placed < n_cues:
         r, c = rng.randint(lo, hi, 2)
@@ -168,8 +169,9 @@ class Bug:
 
     def __init__(self, pos, genome, ckpt='checkpoints', seed=42, learn_flags=None, shared=None,
                  energy_cost_base=0.002, patchy=False, env_gain=None, env_decay=None,
-                 stable=False):
+                 stable=False, world_size=15):
         self.pos = np.array(pos, dtype=int)
+        self.world_size = world_size
         self.energy = 0.8
         self.alive = True
         self.foods = 0
@@ -191,7 +193,7 @@ class Bug:
         self.energy_cost = g.get('energy_cost', 1.0)   # 代谢率
         self.explore_noise = g.get('explore_noise', 0.2)
         # 环境持续学习网络（独立Hebbian，不吃奖惩；由 lf['env'] 控制开关）
-        self.env = (EnvHebbian(size=15,
+        self.env = (EnvHebbian(size=world_size,
                                decay=env_decay if env_decay is not None else g.get('env_decay', 0.999),
                                gain=env_gain if env_gain is not None else g.get('env_gain', 1.0))
                     if self.lf.get('env', False) else None)
@@ -210,8 +212,13 @@ class Bug:
         self.mb = mb
         self.init_W = mb.W_out.copy()               # 记录出生权重（算漂移）
 
-        hip = Hippocampus(world_size=15, decay=0.9995)
-        hip.load(f'{ckpt}/hip_final.npy')
+        hip = Hippocampus(world_size=world_size, decay=0.9995)
+        if world_size == 15:
+            hip.load(f'{ckpt}/hip_final.npy')
+        else:
+            # 大世界：训练好的 15×15 本能地图嵌入左上角（对应稳定产区），其余空白
+            small = np.load(f'{ckpt}/hip_final.npy')
+            hip.memory[:small.shape[0], :small.shape[1]] = small
         self.hip = hip
 
         fm = ForwardModel(n_kc=500, n_actions=4, lr=0.1, seed=seed)
@@ -231,7 +238,7 @@ class Bug:
         sensory = np.concatenate([vision, lang_input])
 
         r, c = int(self.pos[0]), int(self.pos[1])
-        hip_strength = self.hip.memory[r, c] if (0 <= r < 15 and 0 <= c < 15) else 0.0
+        hip_strength = self.hip.memory[r, c] if (0 <= r < self.world_size and 0 <= c < self.world_size) else 0.0
         task_bias = self.pfc.forward(lang_input, self.energy, hip_strength)
         ctx_gain = self.ctx.forward(task_bias[:4])
         active_kc = self.mb.encode(sensory)
@@ -322,12 +329,13 @@ def make_genome(rng, scale=1.0):
 
 def run_group(name, use_genes, patchy, n_bugs=10, steps=6000, seed=42, learn_flags=None,
               share_brain=False, n_food=10, energy_cost_base=0.002, gene_scale=1.0,
-              flip_at=None, env_gain=None, env_decay=None, stable=False, n_cues=6):
+              flip_at=None, env_gain=None, env_decay=None, stable=False, n_cues=6,
+              world_size=15):
     rng = np.random.RandomState(seed)
-    world = World(size=15, n_food=n_food, n_walls=3, n_cues=6, seed=seed)
+    world = World(size=world_size, n_food=n_food, n_walls=3, n_cues=6, seed=seed)
     if patchy:
         world.weights = QUADRANT_WEIGHTS.copy()
-        world.grid = np.full((15, 15), World.EMPTY, dtype=int)
+        world.grid = np.full((world_size, world_size), World.EMPTY, dtype=int)
         world._place_walls(3)
         for _ in range(n_food):
             respawn_food_patchy(world)
@@ -338,7 +346,7 @@ def run_group(name, use_genes, patchy, n_bugs=10, steps=6000, seed=42, learn_fla
         # 复现 v1：10 虫共享同一套大脑对象
         mb_s = MushroomBody(n_input=20, n_kc=500, n_actions=4, lr=0.15, trace_decay=0.85, seed=seed)
         mb_s.load('checkpoints/mb_final.npz')
-        hip_s = Hippocampus(world_size=15, decay=0.9995)
+        hip_s = Hippocampus(world_size=world_size, decay=0.9995)
         hip_s.load('checkpoints/hip_final.npy')
         fm_s = ForwardModel(n_kc=500, n_actions=4, lr=0.1, seed=seed)
         fm_s.load('checkpoints/fm_final.npy')
@@ -350,25 +358,30 @@ def run_group(name, use_genes, patchy, n_bugs=10, steps=6000, seed=42, learn_fla
     if stable:
         place_stable(world, rng, corner='tl', n_cues=n_cues, n_food=n_food)
 
+    birth_lo, birth_hi = 2, world_size - 2
     for i in range(n_bugs):
-        r, c = rng.randint(2, 13, 2)
+        r, c = rng.randint(birth_lo, birth_hi, 2)
         while world.grid[r, c] != World.EMPTY:
-            r, c = rng.randint(2, 13, 2)
+            r, c = rng.randint(birth_lo, birth_hi, 2)
         genome = make_genome(rng, gene_scale) if use_genes else {}
         bugs.append(Bug([r, c], genome, seed=42, learn_flags=learn_flags, shared=shared,
                         energy_cost_base=energy_cost_base, patchy=patchy,
-                        env_gain=env_gain, env_decay=env_decay, stable=stable))
+                        env_gain=env_gain, env_decay=env_decay, stable=stable,
+                        world_size=world_size))
     world.bugs = bugs   # 供 safe_respawn 检查距离
 
     pair_dists = []
     total_deaths = 0
     flip_mark = None
+    cue_arr = np.array(world.cue_positions) if stable else None
+    near_cue_steps = 0   # 大世界指标：产区停留步数
 
     for step in range(steps):
         if flip_at is not None and step == flip_at:
             # 环境突变：食物产区从左上迁移到右下
             if stable:
                 place_stable(world, rng, corner='br', n_cues=n_cues, n_food=n_food)
+                cue_arr = np.array(world.cue_positions)
             else:
                 world.weights = [0.15, 0.20, 0.20, 0.45]
                 world.grid[world.grid == world.FOOD] = world.EMPTY
@@ -378,10 +391,14 @@ def run_group(name, use_genes, patchy, n_bugs=10, steps=6000, seed=42, learn_fla
         for bug in bugs:
             if bug.alive:
                 bug.decide_and_learn(world)
+                if cue_arr is not None and len(cue_arr):
+                    d = np.abs(cue_arr - bug.pos).sum(axis=1).min()
+                    if d <= 3:
+                        near_cue_steps += 1
             else:
                 # 饿死复活：保留大脑和基因，换个出生点继续发育
                 bug.energy = 0.8
-                bug.pos = np.array([rng.randint(2, 13), rng.randint(2, 13)], dtype=int)
+                bug.pos = np.array([rng.randint(birth_lo, birth_hi), rng.randint(birth_lo, birth_hi)], dtype=int)
                 bug.alive = True
                 total_deaths += 1
         if step % 100 == 0:
@@ -408,6 +425,7 @@ def run_group(name, use_genes, patchy, n_bugs=10, steps=6000, seed=42, learn_fla
         'drift_mean': drifts.mean(), 'drift_std': drifts.std(), 'drifts': drifts,
         'pair_dists': pair_dists,
         'post_flip': post_flip,
+        'near_cue_ratio': near_cue_steps / max(1, steps * n_bugs),
     }
     return result
 
@@ -711,6 +729,46 @@ if __name__ == '__main__':
             r = run_group(name, use_genes=False, patchy=False, learn_flags=flags,
                           steps=2000, n_food=nf, energy_cost_base=ecb)
             print(f"{name:<30} {r['foods_mean']:>7.1f} {r['foods_std']:>7.1f} {r['deaths']:>4}")
+        sys.exit(0)
+
+    if '--bigworld' in sys.argv:
+        # 大世界验证：30×30 + 稀疏稳定产区（左上）→ env 网络远程导航价值
+        # 15×15 无增益的瓶颈 = 世界太小（感知覆盖广）；30×30 感知范围外占比高
+        print("===== 大世界 30×30 + 稳定产区：env网络远程导航价值（8000步，10虫/组）=====\n")
+        base_learn = {'mb': True, 'hip': True, 'fm': True, 'pfc': True, 'ctx': True}
+        env_learn = {'mb': True, 'hip': True, 'fm': True, 'pfc': True, 'ctx': True, 'env': True}
+
+        r_noenv = run_group('无env 30x30稳定', use_genes=False, patchy=False, stable=True,
+                            learn_flags=base_learn, steps=8000, n_food=24, n_cues=4,
+                            world_size=30)
+        r_env = run_group('env(g0.3) 30x30稳定', use_genes=False, patchy=False, stable=True,
+                          learn_flags=env_learn, steps=8000, n_food=24, n_cues=4,
+                          env_gain=0.3, world_size=30)
+        r_env1 = run_group('env(g1.0) 30x30稳定', use_genes=False, patchy=False, stable=True,
+                           learn_flags=env_learn, steps=8000, n_food=24, n_cues=4,
+                           env_gain=1.0, world_size=30)
+
+        print(f"{'组':<20} {'食物均值':>7} {'食物std':>7} {'漂移std':>7} {'熵':>5} {'产区停留%':>8}")
+        for r in [r_noenv, r_env, r_env1]:
+            print(f"{r['name']:<20} {r['foods_mean']:>7.1f} {r['foods_std']:>7.1f} {r['drift_std']:>7.2f} "
+                  f"{r['entropy_mean']:>5.2f} {r['near_cue_ratio'] * 100:>7.1f}%")
+
+        fig, axes = plt.subplots(1, 3, figsize=(15, 4.2))
+        rr = [r_noenv, r_env, r_env1]
+        names = [r['name'].split(' ')[0] for r in rr]
+        colors = ['#adb5bd', '#4cc9f0', '#4895ef']
+        axes[0].bar(range(3), [r['foods_mean'] for r in rr], color=colors)
+        axes[0].set_xticks(range(3)); axes[0].set_xticklabels(names, fontsize=9)
+        axes[0].set_title('食物均值（远程导航价值）'); axes[0].set_ylabel('foods')
+        axes[1].bar(range(3), [r['near_cue_ratio'] * 100 for r in rr], color=colors)
+        axes[1].set_xticks(range(3)); axes[1].set_xticklabels(names, fontsize=9)
+        axes[1].set_title('产区停留占比%（环境记忆引导力）'); axes[1].set_ylabel('%')
+        axes[2].bar(range(3), [r['drift_std'] for r in rr], color=colors)
+        axes[2].set_xticks(range(3)); axes[2].set_xticklabels(names, fontsize=9)
+        axes[2].set_title('权重漂移std（个体分化）'); axes[2].set_ylabel('drift std')
+        plt.tight_layout()
+        plt.savefig('multi_bug_bigworld_result.png', dpi=110)
+        print("\n图表已保存: multi_bug_bigworld_result.png")
         sys.exit(0)
 
     print("===== 基因×经历 个体分化实验（v2 真学习版）=====\n")
