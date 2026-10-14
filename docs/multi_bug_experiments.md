@@ -89,12 +89,33 @@
 - **确凿**：explore 基因定向演化（稳定↓/打乱↑），环境压力通过繁殖写进基因
 - **弱信号**：出生距产区后期下降，需多 seed + 更长世代 + 到达时间指标坐实
 
+### 4b. 繁殖策略：纯突变 vs 突变+交叉（15×15, 12代×20虫, 稳定环境）
+
+| 指标（G11 终点） | 纯突变 | 突变+交叉 |
+|---|---|---|
+| 出生距产区 | 6.10（后期反而升） | **1.80**（G4 起稳定 1.8-3） |
+| explore | 0.28→0.24（缓降） | 0.24→**0.13**（单调降） |
+| smell | 1.57→1.44（退化） | 1.35→**1.99**（单调升） |
+
+**交叉重组显著加速固化**：出生距产区终点差 3.4 倍，explore/smell 演化更单调。
+机制 = Fisher–Muller 效应（重组让有利组合一次扩散，单基因突变只能逐步调）。
+
+### 4c. 大世界 Baldwin（30×30, 12代×16虫, n_food=16, n_cues=2）
+
+| 组 | explore G0→G11 | 出生距产区趋势 |
+|---|---|---|
+| 稳定 | 0.24→0.22（持平） | 无趋势（8.7→波动16） |
+| 打乱 | 0.24→0.13（反降） | 无趋势 |
+
+**负结果**：30×30 觅食太难（16 食物 900 格），吃饱靠出生位置运气而非策略 → 选择压力被噪声淹没。
+**Baldwin 固化需要可重复的选择压力，世界太大反而稀释压力**（15×15 下固化照常）。
+
 ## 代码文件
 
 | 文件 | 内容 |
 |---|---|
 | `multi_bug_diff.py` | v1：基因=决策偏好调制（已证无效），含感知修复 |
-| `multi_bug_genome.py` | v2：基因=学习参数，含 EnvHebbian / 扫描 / 环境迁移 / Baldwin 繁殖实验 |
+| `multi_bug_genome.py` | v2：基因=学习参数，含 EnvHebbian(v3) / 可重叠食物 / 扫描 / 迁移 / Baldwin / 交叉繁殖 |
 | `visualize_multi.py` | 另一会话的可视化版（含感知 bug，未修） |
 
 ## 运行方式
@@ -104,11 +125,13 @@ python multi_bug_genome.py            # v2 三组对照
 python multi_bug_genome.py --scan     # 三因素扫描
 python multi_bug_genome.py --env      # env 网络对照
 python multi_bug_genome.py --stableenv  # 稳定结构+产区迁移
-python multi_bug_genome.py --evolve   # Baldwin 跨代固化
+python multi_bug_genome.py --bigworld # 30×30 n_food 扫描（EnvHebbian v3 验证）
+python multi_bug_genome.py --evolve   # Baldwin 跨代固化（15×15 + 30×30）
+python multi_bug_genome.py --cross    # 繁殖策略：纯突变 vs 交叉
 ```
 
 ## 下一步
 
 - 多 seed 平均 + 更长世代 + "首次到达产区时间"指标，坐实 Baldwin 趋势
-- 大世界（30×30）+ 稀疏稳定产区 → env 网络远程导航价值兑现
-- 繁殖 + 基因重组（交叉），让分化变成真正的进化
+- 修复后的 EnvHebbian × Baldwin：环境网络作为"学习桥"，跨代固化是否更快/更稳
+- 环境迁移场景交叉验证：稳定→打乱，看固化后的基因惯性（trade-off）

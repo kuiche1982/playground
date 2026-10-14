@@ -479,7 +479,8 @@ def run_group(name, use_genes, patchy, n_bugs=10, steps=6000, seed=42, learn_fla
 
 
 def evolve(n_gens=10, steps_per_gen=3000, n_bugs=20, seed=42, n_cues=2,
-           test_steps=2000, env_pool=None, top_k=8, world_size=15, n_food=10):
+           test_steps=2000, env_pool=None, top_k=8, world_size=15, n_food=10,
+           cross=False):
     """Baldwin效应验证 v2：固化指标 = 出生测试时到产区的平均距离
     新生儿不学习 → 若环境适应已固化进基因，出生就有"去产区"的空间偏好
     env_pool: None=跨代稳定；'shuffle'=每代换布局（对照组）"""
@@ -545,11 +546,20 @@ def evolve(n_gens=10, steps_per_gen=3000, n_bugs=20, seed=42, n_cues=2,
                     bug.alive = True
 
         # 繁殖：Top-k 轮转复制 + 高斯突变，填满种群
+        # cross=True：双亲各取一半基因位点（交叉重组）再突变
         ranked = sorted(bugs, key=lambda b: b.foods, reverse=True)
         new_pool = []
         while len(new_pool) < n_bugs:
-            parent = ranked[len(new_pool) % top_k]
-            child = {k: v * float(rng.uniform(0.9, 1.1)) for k, v in parent.genes.items()}
+            idx = len(new_pool) % top_k
+            p1 = ranked[idx]
+            child = {}
+            for k in p1.genes:
+                if cross and rng.rand() < 0.5:
+                    p2 = ranked[(idx + 1) % top_k]   # 相邻父本交叉
+                    child[k] = p2.genes[k]
+                else:
+                    child[k] = p1.genes[k]
+                child[k] *= float(rng.uniform(0.9, 1.1))
             new_pool.append(child)
         pool = new_pool
 
@@ -566,6 +576,26 @@ def evolve(n_gens=10, steps_per_gen=3000, n_bugs=20, seed=42, n_cues=2,
 
 if __name__ == '__main__':
     import sys
+    if '--cross' in sys.argv:
+        # 繁殖策略对比：纯突变 vs 突变+基因交叉（Baldwin 框架内）
+        # 交叉 = 双亲各取一半基因位点重组 → 有利组合更快扩散？
+        print("===== 繁殖策略：纯突变 vs 突变+交叉（15×15, 12代×20虫, 稳定环境）=====\n")
+        print("纯突变:")
+        mut = evolve(n_gens=12, cross=False)
+        print("\n突变+交叉:")
+        cr = evolve(n_gens=12, cross=True)
+
+        import matplotlib.pyplot as plt
+        plt.figure(figsize=(7, 4.5))
+        plt.plot(range(12), mut, 'o-', label='纯突变', color='#adb5bd', linewidth=2)
+        plt.plot(range(12), cr, 's--', label='突变+交叉', color='#f72585', linewidth=2)
+        plt.xlabel('世代'); plt.ylabel('出生距产区')
+        plt.title('交叉重组对固化速度/终点的影响')
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig('multi_bug_cross_result.png', dpi=110)
+        print("\n图表已保存: multi_bug_cross_result.png")
+        sys.exit(0)
     if '--evolve' in sys.argv:
         print("===== Baldwin效应：产区偏好跨代固化（15×15 12代×20虫）=====\n")
         print("稳定环境（产区固定左上）:")
