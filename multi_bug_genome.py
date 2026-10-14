@@ -210,19 +210,20 @@ class Bug:
         return float(np.linalg.norm(self.mb.W_out - self.init_W))
 
 
-def make_genome(rng):
+def make_genome(rng, scale=1.0):
+    """基因差异放大：scale 控制变异幅度（1.0=弱, 2.0=强）"""
     return {
-        'lr_gain': rng.uniform(0.2, 1.5),        # 学得快/慢（增量学习）
-        'trace_gain': rng.uniform(0.7, 1.15),    # 记得久/忘得快
-        'da_gain': rng.uniform(0.5, 1.5),        # 奖励敏感/迟钝
-        'smell_sens': rng.uniform(0.3, 2.0),     # 鼻子灵/钝
-        'energy_cost': rng.uniform(0.7, 1.5),    # 代谢低/高
-        'explore_noise': rng.uniform(0.02, 0.5), # 探索/保守
+        'lr_gain': rng.uniform(1.0 - 0.8 * scale, 1.0 + 0.5 * scale),   # 学得快/慢
+        'trace_gain': rng.uniform(1.0 - 0.3 * scale, 1.0 + 0.15 * scale),  # 记得久/忘得快
+        'da_gain': rng.uniform(1.0 - 0.5 * scale, 1.0 + 0.5 * scale),  # 奖励敏感/迟钝
+        'smell_sens': rng.uniform(1.0 - 0.7 * scale, 1.0 + 1.0 * scale),  # 鼻子灵/钝
+        'energy_cost': rng.uniform(1.0 - 0.3 * scale, 1.0 + 0.5 * scale),  # 代谢低/高
+        'explore_noise': rng.uniform(0.05 * scale, 0.2 + 0.3 * scale),  # 探索/保守
     }
 
 
 def run_group(name, use_genes, patchy, n_bugs=10, steps=6000, seed=42, learn_flags=None,
-              share_brain=False, n_food=10, energy_cost_base=0.002):
+              share_brain=False, n_food=10, energy_cost_base=0.002, gene_scale=1.0):
     rng = np.random.RandomState(seed)
     world = World(size=15, n_food=n_food, n_walls=3, n_cues=6, seed=seed)
     if patchy:
@@ -249,7 +250,7 @@ def run_group(name, use_genes, patchy, n_bugs=10, steps=6000, seed=42, learn_fla
         r, c = rng.randint(2, 13, 2)
         while world.grid[r, c] != World.EMPTY:
             r, c = rng.randint(2, 13, 2)
-        genome = make_genome(rng) if use_genes else {}
+        genome = make_genome(rng, gene_scale) if use_genes else {}
         bugs.append(Bug([r, c], genome, seed=42, learn_flags=learn_flags, shared=shared,
                         energy_cost_base=energy_cost_base, patchy=patchy))
 
@@ -291,6 +292,75 @@ def run_group(name, use_genes, patchy, n_bugs=10, steps=6000, seed=42, learn_fla
 
 if __name__ == '__main__':
     import sys
+    if '--scan' in sys.argv:
+        # 三因素扫描：基因强度 × 环境异质性 × 学习（经历写入）
+        # 学习关 = 纯环境直接作用；学习开 = 经历累积（环境通过行为进入大脑）
+        print("===== 基因×环境×经历 三因素扫描（4000步，10虫/组）=====\n")
+        learn_on = {'mb': True, 'hip': True, 'fm': True, 'pfc': True, 'ctx': True}
+        learn_off = {'mb': False, 'hip': False, 'fm': False, 'pfc': False, 'ctx': False}
+        combos = [
+            ('基因0 环境均匀 不学', 0.0, False, learn_off),
+            ('基因0 环境斑块 不学', 0.0, True,  learn_off),
+            ('基因0 环境均匀 学习', 0.0, False, learn_on),
+            ('基因0 环境斑块 学习', 0.0, True,  learn_on),
+            ('基因弱 环境均匀 学习', 1.0, False, learn_on),
+            ('基因弱 环境斑块 学习', 1.0, True,  learn_on),
+            ('基因强 环境均匀 学习', 2.0, False, learn_on),
+            ('基因强 环境斑块 学习', 2.0, True,  learn_on),
+        ]
+        print(f"{'组合':<22} {'食物均值':>6} {'食物std':>7} {'漂移std':>7} {'漂移均值':>7} {'熵':>5} {'距离':>5}")
+        rows = []
+        for name, gs, patchy, flags in combos:
+            r = run_group(name, use_genes=(gs > 0), patchy=patchy, learn_flags=flags,
+                          steps=4000, gene_scale=gs)
+            rows.append(r)
+            print(f"{name:<22} {r['foods_mean']:>6.1f} {r['foods_std']:>7.1f} {r['drift_std']:>7.2f} "
+                  f"{r['drift_mean']:>7.2f} {r['entropy_mean']:>5.2f} {r['pair_dist_mean']:>5.1f}")
+
+        # 主效应计算（漂移std = 个体发育分叉的直接证据）
+        drift_std = {r['name']: r['drift_std'] for r in rows}
+        learn_effect = (drift_std['基因0 环境均匀 学习'] + drift_std['基因0 环境斑块 学习']
+                        - drift_std['基因0 环境均匀 不学'] - drift_std['基因0 环境斑块 不学']) / 2
+        env_effect_learn = (drift_std['基因0 环境斑块 学习'] + drift_std['基因弱 环境斑块 学习']
+                            - drift_std['基因0 环境均匀 学习'] - drift_std['基因弱 环境均匀 学习']) / 2
+        gene_effect_strong = (drift_std['基因强 环境均匀 学习'] + drift_std['基因强 环境斑块 学习']
+                              - drift_std['基因弱 环境均匀 学习'] - drift_std['基因弱 环境斑块 学习']) / 2
+        print(f"\n主效应（漂移std贡献，越大=该因素越让个体分叉）:")
+        print(f"  经历(学习写入): {learn_effect:+.2f}")
+        print(f"  环境(斑块化)  : {env_effect_learn:+.2f}")
+        print(f"  基因(弱→强)   : {gene_effect_strong:+.2f}")
+
+        # 可视化
+        fig, axes = plt.subplots(1, 2, figsize=(13, 4.5))
+        labels = [r['name'] for r in rows]
+        vals = [r['drift_std'] for r in rows]
+        colors = ['#adb5bd', '#4cc9f0', '#f72585']
+        bar_colors = []
+        for n in labels:
+            if '不学' in n:
+                bar_colors.append('#adb5bd')
+            elif '基因强' in n:
+                bar_colors.append('#f72585')
+            elif '基因弱' in n or ('基因0' in n and '学习' in n):
+                bar_colors.append('#4cc9f0')
+            else:
+                bar_colors.append('#adb5bd')
+        axes[0].barh(range(len(labels))[::-1], vals, color=bar_colors)
+        axes[0].set_yticks(range(len(labels))[::-1]); axes[0].set_yticklabels(labels, fontsize=8)
+        axes[0].set_xlabel('权重漂移std（个体大脑分叉程度）')
+        axes[0].set_title('三因素对个体分化贡献')
+        # 主效应
+        axes[1].bar(['基因\n(弱→强)', '经历\n(学习写入)', '环境\n(斑块化)'],
+                    [gene_effect_strong, learn_effect, env_effect_learn],
+                    color=['#f72585', '#4cc9f0', '#adb5bd'])
+        axes[1].set_title('主效应：漂移std贡献'); axes[1].set_ylabel('贡献量')
+        for i, v in enumerate([gene_effect_strong, learn_effect, env_effect_learn]):
+            axes[1].text(i, v + 0.05, f'{v:+.2f}', ha='center', fontsize=10)
+        plt.tight_layout()
+        plt.savefig('multi_bug_scan_result.png', dpi=110)
+        print("\n图表已保存: multi_bug_scan_result.png")
+        sys.exit(0)
+
     if '--diag' in sys.argv:
         # 组件级诊断：逐个开关学习组件，定位谁毁掉找食
         print("===== 学习组件诊断（A组配置，无基因，均匀食物）=====\n")
