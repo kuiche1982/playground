@@ -480,18 +480,23 @@ def run_group(name, use_genes, patchy, n_bugs=10, steps=6000, seed=42, learn_fla
 
 def evolve(n_gens=10, steps_per_gen=3000, n_bugs=20, seed=42, n_cues=2,
            test_steps=2000, env_pool=None, top_k=8, world_size=15, n_food=10,
-           cross=False, learn_env=True, migrate_at=None):
+           cross=False, learn_env=True, migrate_at=None, sel_mode='topk'):
     """Baldwin效应验证：固化指标 = 出生测试时到产区的平均距离
     新生儿不学习 → 若环境适应已固化进基因，出生就有"去产区"的空间偏好
     env_pool: None=跨代稳定；'shuffle'=每代换布局（对照组）
     learn_env: 个体是否带 EnvHebbian 环境网络（耦合验证）
-    migrate_at: 第 N 代起产区从左上迁到右下（固化惯性验证）"""
+    migrate_at: 第 N 代起产区从左上迁到右下（固化惯性验证）
+    sel_mode: 繁殖选择策略
+      'topk'       = Top-k 截断选择（精英垄断，多样性快速丢失）
+      'tournament' = 锦标赛：随机抽 k 个取最优（自然选择，保多样性）
+      'roulette'   = 轮盘赌：按食物数概率采样（弱者也有繁殖机会）"""
     rng = np.random.RandomState(seed)
     pool = [make_genome(rng, 1.0) for _ in range(n_bugs)]
     birth_dist = []   # 出生测试：平均距产区距离（越小=固化越深）
     birth_food = []   # 出生测试：食物数（固化对信号 → 出生就能吃到；固化错信号 → 饿死）
     birth_deaths = [] # 出生测试：饿死次数
     explore_seq, smell_seq = [], []
+    explore_std = []   # 种群内 explore 基因标准差 = 多样性指标
     learn = {'mb': True, 'hip': True, 'fm': True, 'pfc': True, 'ctx': True, 'env': learn_env}
     nolearn = {'mb': False, 'hip': False, 'fm': False, 'pfc': False, 'ctx': False, 'env': False}
 
@@ -556,17 +561,36 @@ def evolve(n_gens=10, steps_per_gen=3000, n_bugs=20, seed=42, n_cues=2,
                     bug.pos = np.array([rng.randint(2, world_size - 2), rng.randint(2, world_size - 2)], dtype=int)
                     bug.alive = True
 
-        # 繁殖：Top-k 轮转复制 + 高斯突变，填满种群
-        # cross=True：双亲各取一半基因位点（交叉重组）再突变
-        ranked = sorted(bugs, key=lambda b: b.foods, reverse=True)
+        # 繁殖：选择策略 + 高斯突变，填满种群
+        # topk: 前 top_k 名轮转复制（精英垄断，多样性快速丢失）
+        # tournament: 随机抽 k 只取最优做父本（自然选择，弱者有概率存活繁殖）
+        # roulette: 按食物数概率采样父本（软选择，多样性最高）
+        if sel_mode == 'topk':
+            ranked = sorted(bugs, key=lambda b: b.foods, reverse=True)
+            parents = ranked
+        elif sel_mode == 'tournament':
+            parents = bugs
+        elif sel_mode == 'roulette':
+            parents = bugs
         new_pool = []
         while len(new_pool) < n_bugs:
-            idx = len(new_pool) % top_k
-            p1 = ranked[idx]
+            if sel_mode == 'topk':
+                idx = len(new_pool) % top_k
+                p1 = parents[idx]
+            elif sel_mode == 'tournament':
+                picks = [rng.choice(parents) for _ in range(3)]
+                p1 = max(picks, key=lambda b: b.foods)
+            elif sel_mode == 'roulette':
+                w = np.array([max(0.1, b.foods) for b in parents])
+                p1 = parents[rng.choice(len(parents), p=w / w.sum())]
             child = {}
             for k in p1.genes:
                 if cross and rng.rand() < 0.5:
-                    p2 = ranked[(idx + 1) % top_k]   # 相邻父本交叉
+                    if sel_mode == 'topk':
+                        p2 = parents[(idx + 1) % top_k]
+                    else:
+                        picks2 = [rng.choice(parents) for _ in range(3)]
+                        p2 = max(picks2, key=lambda b: b.foods)
                     child[k] = p2.genes[k]
                 else:
                     child[k] = p1.genes[k]
@@ -580,13 +604,15 @@ def evolve(n_gens=10, steps_per_gen=3000, n_bugs=20, seed=42, n_cues=2,
         birth_deaths.append(bd)
         explore_seq.append(np.mean([p['explore_noise'] for p in pool]))
         smell_seq.append(np.mean([p['smell_sens'] for p in pool]))
+        explore_std.append(np.std([p['explore_noise'] for p in pool]))
         gen_foods = np.array([b.foods for b in bugs])
         print(f"G{gen}: 学习期食物 {gen_foods.mean():.1f}±{gen_foods.std():.1f} | "
               f"出生距产区 {d:.2f} 出生食物 {bf:.1f} 出生饿死 {bd} | "
               f"smell {smell_seq[-1]:.2f} explore {explore_seq[-1]:.2f}")
 
     return {'birth': birth_dist, 'explore': explore_seq, 'smell': smell_seq,
-            'birth_food': birth_food, 'birth_deaths': birth_deaths}
+            'birth_food': birth_food, 'birth_deaths': birth_deaths,
+            'explore_std': explore_std}
 
 
 if __name__ == '__main__':
@@ -644,6 +670,53 @@ if __name__ == '__main__':
               f"env OFF {noenv_b[:,-1].mean():.2f}±{noenv_b[:,-1].std():.2f}")
         print(f"终点 explore: env ON {env_e[:,-1].mean():.3f} | env OFF {noenv_e[:,-1].mean():.3f}")
         print("图表已保存: multi_bug_multiseed_result.png")
+        sys.exit(0)
+    if '--selstrat' in sys.argv:
+        # 繁殖策略对比：Top-k 截断 vs 锦标赛 vs 轮盘赌
+        # 焦点：精英垄断→多样性塌缩→固化错信号无法逃脱；
+        #      随机选择→维持多样性→探索能力不塌缩→出生表现
+        print("===== 繁殖策略对比：Topk vs 锦标赛 vs 轮盘赌（稳定环境 32虫×15代×2seeds）=====\n")
+        seeds = [42, 43]
+        runs = {m: [] for m in ['topk', 'tournament', 'roulette']}
+        for s in seeds:
+            for m in runs:
+                print(f"\n--- seed {s} {m} ---")
+                runs[m].append(evolve(n_gens=15, n_bugs=32, seed=s, steps_per_gen=1500,
+                                      test_steps=1200, env_pool=None, n_food=16, sel_mode=m))
+        colors = {'topk': '#f72585', 'tournament': '#4361ee', 'roulette': '#06d6a0'}
+        x = range(15)
+        import matplotlib.pyplot as plt
+        fig, axes = plt.subplots(1, 4, figsize=(19, 4.2))
+        for m in runs:
+            arr = np.array([r['birth'] for r in runs[m]])
+            axes[0].errorbar(x, arr.mean(0), yerr=arr.std(0), fmt='o-', label=m, color=colors[m], capsize=3)
+        axes[0].set_xlabel('世代'); axes[0].set_ylabel('出生距产区')
+        axes[0].set_title('固化趋势'); axes[0].legend()
+        for m in runs:
+            arr = np.array([r['explore'] for r in runs[m]])
+            axes[1].errorbar(x, arr.mean(0), yerr=arr.std(0), fmt='o-', label=m, color=colors[m], capsize=3)
+        axes[1].set_xlabel('世代'); axes[1].set_ylabel('explore 均值')
+        axes[1].set_title('探索基因均值（塌缩=收敛）'); axes[1].legend()
+        for m in runs:
+            arr = np.array([r['explore_std'] for r in runs[m]])
+            axes[2].errorbar(x, arr.mean(0), yerr=arr.std(0), fmt='o-', label=m, color=colors[m], capsize=3)
+        axes[2].set_xlabel('世代'); axes[2].set_ylabel('explore 标准差')
+        axes[2].set_title('基因多样性（塌缩=精英垄断）'); axes[2].legend()
+        for m in runs:
+            arr = np.array([r['birth_food'] for r in runs[m]])
+            axes[3].errorbar(x, arr.mean(0), yerr=arr.std(0), fmt='o-', label=m, color=colors[m], capsize=3)
+        axes[3].set_xlabel('世代'); axes[3].set_ylabel('出生测试食物数')
+        axes[3].set_title('固化信号正确性'); axes[3].legend()
+        plt.tight_layout()
+        plt.savefig('multi_bug_selstrat_result.png', dpi=110)
+        print("\n终点（G14）:")
+        for m in runs:
+            b = np.array([r['birth'] for r in runs[m]])[:,-1]
+            f = np.array([r['birth_food'] for r in runs[m]])[:,-1]
+            e = np.array([r['explore'] for r in runs[m]])[:,-1]
+            es = np.array([r['explore_std'] for r in runs[m]])[:,-1]
+            print(f"  {m:10s}: 距产区 {b.mean():.2f} | 出生食物 {f.mean():.1f} | explore {e.mean():.3f} (std {es.mean():.3f})")
+        print("图表已保存: multi_bug_selstrat_result.png")
         sys.exit(0)
     if '--bigpop' in sys.argv:
         # 升级规模 + 固化信号正确性诊断
