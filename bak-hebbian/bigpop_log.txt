@@ -1,0 +1,40 @@
+===== 升级规模：40虫×20代×2seeds + 出生测试食物数（固化信号诊断）=====
+
+
+--- seed 42 稳定环境 ---
+G0: 学习期食物 3.1±6.9 | 出生距产区 3.17 出生食物 10.2 出生饿死 42 | smell 1.17 explore 0.26
+G1: 学习期食物 1.6±1.8 | 出生距产区 2.05 出生食物 13.6 出生饿死 46 | smell 1.30 explore 0.26
+G2: 学习期食物 1.0±1.8 | 出生距产区 4.72 出生食物 7.4 出生饿死 49 | smell 1.24 explore 0.27
+G3: 学习期食物 1.2±1.5 | 出生距产区 2.71 出生食物 5.1 出生饿死 45 | smell 1.31 explore 0.31
+/home/user/Doubao/chats/25419664949684994/playground/multi_bug_genome.py:118: RuntimeWarning: overflow encountered in multiply
+  self.density *= self.decay
+/home/user/Doubao/chats/25419664949684994/playground/multi_bug_genome.py:137: RuntimeWarning: overflow encountered in cast
+  bias[i] = total
+G4: 学习期食物 1.1±1.5 | 出生距产区 2.17 出生食物 16.9 出生饿死 34 | smell 1.30 explore 0.34
+G5: 学习期食物 1.7±1.7 | 出生距产区 3.16 出生食物 18.2 出生饿死 44 | smell 1.55 explore 0.32
+G6: 学习期食物 1.2±1.4 | 出生距产区 5.23 出生食物 5.8 出生饿死 58 | smell 1.46 explore 0.28
+G7: 学习期食物 1.3±1.8 | 出生距产区 4.61 出生食物 24.8 出生饿死 38 | smell 1.35 explore 0.24
+G8: 学习期食物 0.9±1.0 | 出生距产区 5.96 出生食物 26.6 出生饿死 42 | smell 1.39 explore 0.24
+G9: 学习期食物 0.8±0.9 | 出生距产区 4.65 出生食物 3.5 出生饿死 47 | smell 1.09 explore 0.36
+G10: 学习期食物 0.9±1.2 | 出生距产区 4.55 出生食物 6.5 出生饿死 50 | smell 1.17 explore 0.36
+G11: 学习期食物 1.4±1.5 | 出生距产区 4.34 出生食物 0.6 出生饿死 76 | smell 1.37 explore 0.33
+G12: 学习期食物 0.8±1.0 | 出生距产区 6.94 出生食物 9.6 出生饿死 62 | smell 1.38 explore 0.34
+/home/user/Doubao/chats/25419664949684994/playground/multi_bug_genome.py:138: RuntimeWarning: overflow encountered in multiply
+  return bias * self.gain
+G13: 学习期食物 0.6±0.9 | 出生距产区 6.35 出生食物 6.4 出生饿死 57 | smell 1.39 explore 0.42
+G14: 学习期食物 0.8±1.1 | 出生距产区 6.25 出生食物 3.5 出生饿死 67 | smell 1.32 explore 0.37
+G15: 学习期食物 0.8±1.0 | 出生距产区 4.98 出生食物 12.2 出生饿死 56 | smell 1.27 explore 0.42
+G16: 学习期食物 1.7±3.0 | 出生距产区 5.73 出生食物 12.4 出生饿死 42 | smell 1.34 explore 0.73
+G17: 学习期食物 1.6±2.5 | 出生距产区 5.31 出生食物 13.7 出生饿死 41 | smell 1.30 explore 0.83
+G18: 学习期食物 3.8±4.1 | 出生距产区 5.51 出生食物 9.7 出生饿死 50 | smell 1.27 explore 0.90
+G19: 学习期食物 1.9±2.5 | 出生距产区 5.92 出生食物 9.1 出生饿死 44 | smell 1.22 explore 0.90
+
+--- seed 42 打乱环境 ---
+G0: 学习期食物 3.1±6.9 | 出生距产区 3.17 出生食物 10.2 出生饿死 42 | smell 1.17 explore 0.26
+G1: 学习期食物 0.9±1.5 | 出生距产区 4.06 出生食物 1.2 出生饿死 61 | smell 1.28 explore 0.27
+G2: 学习期食物 1.0±1.5 | 出生距产区 5.38 出生食物 11.7 出生饿死 50 | smell 1.10 explore 0.23
+G3: 学习期食物 1.0±1.3 | 出生距产区 4.33 出生食物 0.8 出生饿死 54 | smell 1.07 explore 0.26
+G4: 学习期食物 0.8±1.3 | 出生距产区 3.81 出生食物 11.7 出生饿死 31 | smell 1.22 explore 0.28
+G5: 学习期食物 1.1±1.7 | 出生距产区 5.59 出生食物 0.6 出生饿死 61 | smell 1.23 explore 0.27
+G6: 学习期食物 0.5±0.9 | 出生距产区 4.17 出生食物 30.4 出生饿死 32 | smell 1.38 explore 0.29
+G7: 学习期食物 1.2±1.5 | 出生距产区 3.20 出生食物 17.3 出生饿死 45 | smell 1.31 explore 0.33
