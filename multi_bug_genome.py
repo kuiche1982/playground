@@ -253,13 +253,15 @@ class Bug:
         self.max_age = max_age
         self.mature_age = g.get('mature_age', mature_age) if g else mature_age
         # ---- 文化传递（亲代教学）：mentor_ticks=0 关闭，等价旧版繁殖即死 ----
-        self.mentor_ticks = mentor_ticks
+        # 基因化：每个虫子自己的教学窗由自身基因决定（自然选择收敛）；构造参数仅作 fallback
+        self.mentor_ticks = g.get('mentor_ticks', mentor_ticks) if g else mentor_ticks
         self.imitation_prob = imitation_prob
         self.energy_transfer = energy_transfer
         self.mentor = None            # 父代引用（子代幼年期模仿源）
         self.kids = []                # 子代引用列表（教学期能量支援目标）
         self.teaching_ticks = 0       # 父代教学剩余步数（>0 = 教学态）
         self.is_mentor = False
+        self.mentor_fixed = False     # True = 教学窗被外部锁死，不遗传变异（固定对照模式）
         self.last_action = 0
         # 环境持续学习网络（独立Hebbian，不吃奖惩；由 lf['env'] 控制开关）
         self.env = (EnvHebbian(size=world_size,
@@ -431,10 +433,15 @@ class Bug:
             child = {}
             for k, v in self.genes.items():
                 child[k] = v * float(rng.uniform(0.9, 1.1))
+            # 固定对照模式：教学窗基因不遗传变异（锁死父代值）
+            if self.mentor_fixed:
+                child['mentor_ticks'] = self.mentor_ticks
             # 物理边界：防止有害漂移失控（真实基因有结构上限）
             for k in child:
                 if k == 'mature_age':
                     child[k] = min(400.0, max(10.0, child[k]))
+                elif k == 'mentor_ticks':
+                    child[k] = min(300.0, max(0.0, child[k]))
                 elif k == 'energy_cost':
                     child[k] = min(3.0, max(0.3, child[k]))
                 elif k == 'explore_noise':
@@ -466,6 +473,7 @@ class Bug:
                             energy_transfer=self.energy_transfer)
             child_bug.mentor = self
             child_bug.gen = self.gen + 1
+            child_bug.mentor_fixed = self.mentor_fixed
             newborns.append(child_bug)
         self.children += len(newborns)
         if self.mentor_ticks > 0:
@@ -497,6 +505,7 @@ def make_genome(rng, scale=1.0):
         'env_decay': rng.uniform(0.997, 0.9999),   # 环境跟踪速度（快=易适应变化/易被噪声骗）
         'env_gain': rng.uniform(0.5, 2.0),         # 环境偏置强度（敏感/迟钝）
         'mature_age': rng.uniform(20.0, 80.0),     # 成熟年龄（步）：多快能繁殖（自然选择焦点）
+        'mentor_ticks': rng.uniform(0.0, 120.0),   # 教学窗（步）：0=繁殖即死不教；高=长期喂奶。自然选择收敛
     }
 
 
@@ -749,7 +758,8 @@ def natural_evolve(steps=15000, n_bugs=24, seed=42, world_size=15, n_food=48,
                    reproduce_threshold=0.4, reproduce_cost=0.7,
                    birth_energy=1.0, litter_size=3, smell_range=5, max_age=500,
                    lifespan=True, verbose_every=2000, record_full=False,
-                   mentor_ticks=0, imitation_prob=0.8, energy_transfer=0.5):
+                   mentor_ticks=0, imitation_prob=0.8, energy_transfer=0.5,
+                   mentor_gene_mode=False):
     """自然生命周期进化（B 方案：繁殖即死 / semelparity，多胎）
     无代际人为选择：没有 topk/锦标赛/轮盘赌，没有"饿死复活"
     lifespan=True : 自然版——饿死即移除、成熟+能量够自动繁殖、父代繁殖即死 → 世代更替由自然死亡驱动
@@ -791,10 +801,17 @@ def natural_evolve(steps=15000, n_bugs=24, seed=42, world_size=15, n_food=48,
                         world_size=world_size,
                         mentor_ticks=mentor_ticks, imitation_prob=imitation_prob,
                         energy_transfer=energy_transfer))
+    # 固定对照模式：锁死教学窗基因，不参与演化（A/B 组用）
+    if not mentor_gene_mode:
+        for b in bugs:
+            b.genes['mentor_ticks'] = mentor_ticks
+            b.mentor_ticks = mentor_ticks
+            b.mentor_fixed = True
     world.bugs = bugs
 
-    pop_seq, mature_seq, food_seq = [], [], []
+    pop_seq, mature_seq, food_seq, mentor_seq = [], [], [], []
     mature_stats = []
+    mentor_stats = []
     death_ages, death_causes = [], []
     gen_max = 0
     logged = set()
@@ -840,7 +857,9 @@ def natural_evolve(steps=15000, n_bugs=24, seed=42, world_size=15, n_food=48,
             live = alive()
             if live:
                 ma = np.array([b.mature_age for b in live])
+                mt = np.array([b.mentor_ticks for b in live])
                 mature_seq.append(ma.mean())
+                mentor_seq.append(mt.mean())
                 food_seq.append(np.mean([b.foods for b in live]))
                 if record_full:
                     mature_stats.append({
@@ -848,12 +867,18 @@ def natural_evolve(steps=15000, n_bugs=24, seed=42, world_size=15, n_food=48,
                         'min': float(ma.min()), 'p10': float(np.percentile(ma, 10)),
                         'p50': float(np.percentile(ma, 50)), 'p90': float(np.percentile(ma, 90)),
                         'max': float(ma.max()), 'n': int(len(ma))})
+                    mentor_stats.append({
+                        'step': step, 'mean': float(mt.mean()), 'std': float(mt.std()),
+                        'min': float(mt.min()), 'p10': float(np.percentile(mt, 10)),
+                        'p50': float(np.percentile(mt, 50)), 'p90': float(np.percentile(mt, 90)),
+                        'max': float(mt.max()), 'n': int(len(mt))})
         if verbose_every and step % verbose_every == 0:
             print(f"  step {step:>5}: 活虫 {len(alive()):>3} | 最大世代 {gen_max:>2} | "
                   f"累计死亡 {len(logged):>3} (饿死 {death_causes.count('starve')}, "
                   f"繁殖死 {death_causes.count('reproduced')}, 老死 {death_causes.count('age')})")
 
     return {'pop': pop_seq, 'mature': mature_seq, 'mature_stats': mature_stats,
+            'mentor': mentor_seq, 'mentor_stats': mentor_stats,
             'food': food_seq, 'death_ages': np.array(death_ages), 'death_causes': death_causes,
             'gen_max': gen_max, 'n_bugs': n_bugs, 'max_pop': max_pop}
 
