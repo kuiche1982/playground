@@ -216,7 +216,8 @@ class Bug:
                  energy_cost_base=0.002, patchy=False, env_gain=None, env_decay=None,
                  stable=False, world_size=15, natural=False,
                  mature_age=None, reproduce_threshold=0.6, reproduce_cost=0.7,
-                 birth_energy=0.8, litter_size=1, smell_range=2, max_age=None):
+                 birth_energy=0.8, litter_size=1, smell_range=2, max_age=None,
+                 mentor_ticks=0, imitation_prob=0.8, energy_transfer=0.5):
         self.pos = np.array(pos, dtype=int)
         self.world_size = world_size
         self.energy = birth_energy
@@ -251,6 +252,15 @@ class Bug:
         self.smell_range = smell_range
         self.max_age = max_age
         self.mature_age = g.get('mature_age', mature_age) if g else mature_age
+        # ---- 文化传递（亲代教学）：mentor_ticks=0 关闭，等价旧版繁殖即死 ----
+        self.mentor_ticks = mentor_ticks
+        self.imitation_prob = imitation_prob
+        self.energy_transfer = energy_transfer
+        self.mentor = None            # 父代引用（子代幼年期模仿源）
+        self.kids = []                # 子代引用列表（教学期能量支援目标）
+        self.teaching_ticks = 0       # 父代教学剩余步数（>0 = 教学态）
+        self.is_mentor = False
+        self.last_action = 0
         # 环境持续学习网络（独立Hebbian，不吃奖惩；由 lf['env'] 控制开关）
         self.env = (EnvHebbian(size=world_size,
                                decay=env_decay if env_decay is not None else g.get('env_decay', 0.999),
@@ -315,6 +325,13 @@ class Bug:
                  + pfc_bias * 0.5 + ctx_bias + env_bias)
         noise = np.random.randn(4) * self.explore_noise
         action = int(np.argmax(total + noise))
+        # 文化传递：幼年期模仿父代动作（概率随年龄衰减至 0）
+        if (self.mentor is not None and self.mentor.alive
+                and self.mentor_ticks > 0 and self.age < self.mentor_ticks):
+            p = self.imitation_prob * max(0.0, 1.0 - self.age / self.mentor_ticks)
+            if np.random.rand() < p:
+                action = int(self.mentor.last_action)
+        self.last_action = action
         self.actions.append(action)
 
         # ---- 移动 ----
@@ -331,6 +348,14 @@ class Bug:
                 self.foods += 1
                 self.energy = min(1.0, self.energy + 0.3)
                 ate = True
+                # 亲代投资：教学父代把本次食物增量的一部分转移给幼年子代
+                if self.is_mentor and self.teaching_ticks > 0:
+                    kids_alive = [k for k in self.kids if k.alive]
+                    if kids_alive:
+                        feed = 0.3 * self.energy_transfer / len(kids_alive)
+                        for k in kids_alive:
+                            k.energy = min(1.0, k.energy + feed)
+                        self.energy = max(0.0, self.energy - 0.3 * self.energy_transfer)
                 # 食物补充（v1 有、v2 重构时漏掉的 respawn！）
                 if self.stable:
                     safe_respawn(world)      # 绑定 cue + 防原地刷
@@ -377,6 +402,14 @@ class Bug:
             self.deaths += 1
             self.death_cause = 'age'
 
+        # ---- 文化传递：教学期结束，父代死亡（semelparity 的延后实现）----
+        if self.is_mentor and self.teaching_ticks > 0:
+            self.teaching_ticks -= 1
+            if self.teaching_ticks <= 0:
+                self.alive = False
+                self.deaths += 1
+                self.death_cause = 'mentored'
+
     def drift(self):
         """权重漂移 = 当前大脑离出生大脑多远（个体分化的直接证据）"""
         return float(np.linalg.norm(self.mb.W_out - self.init_W))
@@ -387,6 +420,8 @@ class Bug:
         每个后代独立继承基因 + 高斯突变（与 evolve() 突变规则一致）"""
         if not (self.alive and self.natural):
             return None
+        if self.is_mentor:
+            return None   # 教学父代：semelparity，一生一次繁殖
         if self.mature_age is None or self.age < self.mature_age:
             return None
         if self.energy < self.reproduce_threshold:
@@ -425,14 +460,28 @@ class Bug:
                             reproduce_threshold=self.reproduce_threshold,
                             reproduce_cost=self.reproduce_cost,
                             birth_energy=self.energy, litter_size=self.litter_size,
-                            smell_range=self.smell_range, max_age=self.max_age)
+                            smell_range=self.smell_range, max_age=self.max_age,
+                            mentor_ticks=self.mentor_ticks,
+                            imitation_prob=self.imitation_prob,
+                            energy_transfer=self.energy_transfer)
+            child_bug.mentor = self
             child_bug.gen = self.gen + 1
             newborns.append(child_bug)
-        self.energy = 0.0
-        self.alive = False
-        self.deaths += 1
-        self.death_cause = 'reproduced'
         self.children += len(newborns)
+        if self.mentor_ticks > 0:
+            # 文化传递：父代保留部分能量进入教学期（死亡延后），子代获得父代引用
+            keep = min(1.0, self.energy * 0.3)
+            self.energy = keep
+            self.is_mentor = True
+            self.teaching_ticks = self.mentor_ticks
+            self.death_cause = None
+            self.kids.extend(newborns)
+        else:
+            # 旧版：繁殖即死（semelparity）
+            self.energy = 0.0
+            self.alive = False
+            self.deaths += 1
+            self.death_cause = 'reproduced'
         return newborns
 
 
@@ -699,11 +748,13 @@ def natural_evolve(steps=15000, n_bugs=24, seed=42, world_size=15, n_food=48,
                    n_cues=6, max_pop=80, mature_default=40, energy_cost_base=0.002,
                    reproduce_threshold=0.4, reproduce_cost=0.7,
                    birth_energy=1.0, litter_size=3, smell_range=5, max_age=500,
-                   lifespan=True, verbose_every=2000, record_full=False):
+                   lifespan=True, verbose_every=2000, record_full=False,
+                   mentor_ticks=0, imitation_prob=0.8, energy_transfer=0.5):
     """自然生命周期进化（B 方案：繁殖即死 / semelparity，多胎）
     无代际人为选择：没有 topk/锦标赛/轮盘赌，没有"饿死复活"
     lifespan=True : 自然版——饿死即移除、成熟+能量够自动繁殖、父代繁殖即死 → 世代更替由自然死亡驱动
     lifespan=False: 对照版——饿死复活、不繁殖（基因池固定，无演化）
+    mentor_ticks>0: 文化传递——父代繁殖后进入教学期（带子代找食物：模仿+能量支援），期终死亡
     record_full   : 额外记录成熟年龄基因的分布统计（mean/std/min/分位数），供收敛分析
     指标：种群规模 / 成熟年龄基因演化 / 死亡年龄分布 / 死因构成 / 最大世代"""
     rng = np.random.RandomState(seed)
@@ -737,7 +788,9 @@ def natural_evolve(steps=15000, n_bugs=24, seed=42, world_size=15, n_food=48,
                         reproduce_cost=reproduce_cost,
                         birth_energy=birth_energy, litter_size=litter_size,
                         smell_range=smell_range, max_age=max_age if lifespan else None,
-                        world_size=world_size))
+                        world_size=world_size,
+                        mentor_ticks=mentor_ticks, imitation_prob=imitation_prob,
+                        energy_transfer=energy_transfer))
     world.bugs = bugs
 
     pop_seq, mature_seq, food_seq = [], [], []
